@@ -1,0 +1,1175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>BAKUTO — DICE TEST</title>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: #09070a;
+      color: #ddd0b5;
+      font-family: 'Space Mono', monospace;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    #root { width: 100%; }
+
+    body::after {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: repeating-linear-gradient(
+        0deg, transparent, transparent 3px,
+        rgba(0,0,0,0.045) 3px, rgba(0,0,0,0.045) 4px
+      );
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    @keyframes diceRoll {
+      0%   { transform: rotateX(0deg)   rotateY(0deg)   rotateZ(0deg); }
+      18%  { transform: rotateX(210deg) rotateY(140deg) rotateZ(55deg); }
+      40%  { transform: rotateX(390deg) rotateY(255deg) rotateZ(28deg); }
+      62%  { transform: rotateX(545deg) rotateY(330deg) rotateZ(72deg); }
+      82%  { transform: rotateX(678deg) rotateY(395deg) rotateZ(18deg); }
+      100% { transform: rotateX(720deg) rotateY(360deg) rotateZ(0deg); }
+    }
+
+    @keyframes popIn {
+      0%   { transform: scale(0.4); opacity: 0; }
+      60%  { transform: scale(1.12); }
+      100% { transform: scale(1);   opacity: 1; }
+    }
+
+    button { -webkit-tap-highlight-color: transparent; }
+    button:active { opacity: 0.75; }
+
+    ::-webkit-scrollbar { width: 3px; height: 3px; }
+    ::-webkit-scrollbar-track { background: #09070a; }
+    ::-webkit-scrollbar-thumb { background: #2a1e16; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel">
+const { useState, useRef, useEffect } = React;
+
+// ─── Dice logic (mirrors src/modules/dice.js — inlined for standalone use) ────
+
+const PLAYER_SUM_CAP   = 21;
+const PLAYER_MAX_ZEROS = 3;
+const FACE_COUNT       = 6;
+const AI_SUM_CAPS      = [22, 23, 24, 25]; // tier 1–4
+
+function validateConfig(faces) {
+  if (!Array.isArray(faces) || faces.length !== FACE_COUNT)
+    return { valid: false, error: `Must have ${FACE_COUNT} faces.` };
+  if (faces.some(f => f === null))
+    return { valid: false, error: 'All faces must be assigned.' };
+  if (faces.some(f => !Number.isInteger(f) || f < 0))
+    return { valid: false, error: 'Non-negative integers only.' };
+  const sum = faces.reduce((a, b) => a + b, 0);
+  if (sum > PLAYER_SUM_CAP)
+    return { valid: false, error: `Sum ${sum} > cap ${PLAYER_SUM_CAP}.` };
+  const zeros = faces.filter(f => f === 0).length;
+  if (zeros > PLAYER_MAX_ZEROS)
+    return { valid: false, error: `Max ${PLAYER_MAX_ZEROS} zero faces (found ${zeros}).` };
+  return { valid: true, error: null };
+}
+
+function validateAiConfig(faces, sumCap) {
+  if (!Array.isArray(faces) || faces.length !== FACE_COUNT)
+    return { valid: false, error: `Must have ${FACE_COUNT} faces.` };
+  if (faces.some(f => f === null))
+    return { valid: false, error: 'All faces must be assigned.' };
+  if (faces.some(f => !Number.isInteger(f) || f < 0))
+    return { valid: false, error: 'Non-negative integers only.' };
+  const sum = faces.reduce((a, b) => a + b, 0);
+  if (sum > sumCap)
+    return { valid: false, error: `Sum ${sum} > AI cap ${sumCap}.` };
+  return { valid: true, error: null };
+}
+
+function applyModifier(faces, type, value) {
+  const result = [...faces];
+  const maxVal = Math.max(...result);
+  const idx    = result.lastIndexOf(maxVal);
+  if (type === 'add_to_highest')       result[idx] = result[idx] + value;
+  else if (type === 'subtract_from_highest') result[idx] = Math.max(0, result[idx] - value);
+  return result;
+}
+
+function getEffectiveFaces(faces, mods) {
+  let r = faces;
+  for (const m of mods) r = applyModifier(r, m.type, m.value);
+  return r;
+}
+
+// ─── resolveMove (mirrors src/modules/movement.js — inlined for standalone) ──
+
+function resolveMove(currentPos, roll, pathLength, mods = []) {
+  const endIndex = pathLength + 1;
+  let effectiveRoll = roll;
+  for (const mod of mods) {
+    if (mod.type === 'extra_tiles') effectiveRoll += mod.value;
+  }
+  if (effectiveRoll <= 0) return { newPosition: currentPos, landedOnEnd: false, overshoot: 0 };
+  const raw = currentPos + effectiveRoll;
+  if (raw === endIndex) return { newPosition: endIndex, landedOnEnd: true, overshoot: 0 };
+  if (raw > endIndex) {
+    const overshoot   = raw - endIndex;
+    const newPosition = Math.max(0, endIndex - overshoot);
+    return { newPosition, landedOnEnd: false, overshoot };
+  }
+  return { newPosition: raw, landedOnEnd: false, overshoot: 0 };
+}
+
+// ─── boardRenderer (mirrors src/renderers/boardRenderer.js — inlined) ─────────
+
+const C = {
+  pageBg:'#09070a', tileBg:'#120e08', tileBorder:'#1c1410',
+  startBg:'#0e0b07', startBorder:'#2a2010', startText:'#2a1c0e',
+  endBg:'#1a1200', endBorder:'#c08820', endGlow:'rgba(192,136,32,0.28)', endText:'#c08820',
+  playerBg:'#08102a', playerBorder:'#4a8aff', playerGlow:'rgba(74,138,255,0.35)', playerDot:'#4a8aff',
+  aiBg:'#200808', aiBorder:'#c42b24', aiGlow:'rgba(196,43,36,0.35)', aiDot:'#c42b24',
+  goodBg:'#080e06', goodBorder:'#4a6c2a', goodText:'#4a6c2a',
+  badBg:'#0e0706', badBorder:'#8a2a1a', badText:'#8a2a1a',
+  hlBorder:'#c08820', hlGlow:'rgba(192,136,32,0.55)',
+  labelText:'#3a2812', indexText:'#1c1208', connectorColor:'#2a1c10',
+};
+
+function _mk(tag, styles, text) {
+  const e = document.createElement(tag);
+  if (styles) Object.assign(e.style, styles);
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+const board = (() => {
+  let _cont = null, _pathLen = 0, _pEls = [], _aEls = [], _endEl = null;
+  let _data = { player: [], ai: [] };
+  let _orient = null, _resizeH = null;
+
+  function _endIdx()    { return _pathLen + 1; }
+  function _blank(i)    { return { state: i === _pathLen + 1 ? 'end' : 'empty', data: null, highlighted: false }; }
+  function _orientNow() { return window.innerWidth > window.innerHeight ? 'landscape' : 'portrait'; }
+
+  function _calcTileSize(landscape) {
+    if (!_cont) return 36;
+    const avail = (_cont.clientWidth || window.innerWidth) - 40 - 14 - 60;
+    const count = _pathLen + 1;
+    const perTile = Math.floor((avail - count * 3) / count);
+    return Math.max(26, Math.min(landscape ? 46 : 36, perTile));
+  }
+
+  function _buildTile(path, index, size) {
+    const e = _mk('div', {
+      width: size+'px', height: size+'px', flexShrink:'0',
+      display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+      position:'relative', overflow:'hidden',
+    });
+    e.dataset.path = path; e.dataset.index = String(index);
+    return e;
+  }
+
+  function _buildToken(color, glow) {
+    return _mk('div', { width:'16px', height:'16px', borderRadius:'50%', background:color, boxShadow:`0 0 8px ${glow}`, marginTop:'8px' });
+  }
+
+  function _paintCheat(el, data) {
+    const good = data.category === 'good';
+    const color = good ? C.goodText : C.badText;
+    el.appendChild(_mk('div', { position:'absolute', top:'3px', right:'3px', width:'5px', height:'5px', background:color }));
+    el.appendChild(_mk('span', { fontFamily:"'Space Mono',monospace", fontSize:'6px', color, textAlign:'center', lineHeight:'1.4', padding:'0 3px', marginTop:'10px', wordBreak:'break-all', pointerEvents:'none' }, data.japName || data.name || '?'));
+  }
+
+  function _paintEnd() {
+    if (!_endEl) return;
+    const ei = _endIdx();
+    const ps = _data.player[ei]?.state;
+    const as = _data.ai[ei]?.state;
+    _endEl.innerHTML = '';
+    _endEl.appendChild(_mk('span', { fontFamily:"'Bebas Neue',sans-serif", fontSize:'13px', color:C.endText, letterSpacing:'3px', lineHeight:'1' }, 'END'));
+    _endEl.appendChild(_mk('span', { fontFamily:"'Space Mono',monospace", fontSize:'7px', color:'#4a3010', marginTop:'2px' }, '判'));
+    if (ps === 'player_token' || as === 'ai_token') {
+      const row = _mk('div', { display:'flex', gap:'4px', marginTop:'4px', alignItems:'center' });
+      if (ps === 'player_token') row.appendChild(_mk('div', { width:'8px', height:'8px', borderRadius:'50%', background:C.playerDot, boxShadow:`0 0 5px ${C.playerGlow}` }));
+      if (as === 'ai_token')    row.appendChild(_mk('div', { width:'8px', height:'8px', borderRadius:'50%', background:C.aiDot, boxShadow:`0 0 5px ${C.aiGlow}` }));
+      _endEl.appendChild(row);
+    }
+  }
+
+  function _paintTile(path, index) {
+    if (index === _endIdx()) { _paintEnd(); return; }
+    const els = path === 'player' ? _pEls : _aEls;
+    const el  = els[index];
+    if (!el) return;
+    const { state, data, highlighted } = _data[path][index];
+    const isStart = index === 0;
+    el.innerHTML = '';
+
+    let bg = isStart ? C.startBg : C.tileBg;
+    let border = isStart ? C.startBorder : C.tileBorder;
+    let shadow = 'none';
+    if (highlighted) { border = C.hlBorder; shadow = `0 0 10px ${C.hlGlow}`; }
+    if      (state === 'player_token') { bg = C.playerBg; border = C.playerBorder; shadow = `0 0 10px ${C.playerGlow}`; }
+    else if (state === 'ai_token')     { bg = C.aiBg;     border = C.aiBorder;     shadow = `0 0 10px ${C.aiGlow}`; }
+    else if (state === 'cheat' && data) {
+      bg     = data.category === 'good' ? C.goodBg  : C.badBg;
+      border = data.category === 'good' ? C.goodBorder : C.badBorder;
+      if (highlighted) shadow = `0 0 10px ${C.hlGlow}`;
+    }
+    Object.assign(el.style, { background:bg, border:`1px solid ${border}`, boxShadow:shadow, transition:'border-color 0.15s, box-shadow 0.15s, background 0.15s' });
+
+    el.appendChild(_mk('span', { position:'absolute', top:'2px', left:'3px', fontFamily:"'Space Mono',monospace", fontSize:'6px', color: isStart ? C.startText : C.indexText, lineHeight:'1', pointerEvents:'none' }, isStart ? 'S' : String(index)));
+
+    if (state === 'player_token')      el.appendChild(_buildToken(C.playerDot, C.playerGlow));
+    else if (state === 'ai_token')     el.appendChild(_buildToken(C.aiDot, C.aiGlow));
+    else if (state === 'cheat' && data) _paintCheat(el, data);
+    else if (isStart)                  el.appendChild(_mk('span', { fontFamily:"'Bebas Neue',sans-serif", fontSize:'11px', color:C.startText, letterSpacing:'1px', marginTop:'10px' }, 'START'));
+    else if (highlighted)              el.appendChild(_mk('div', { width:'10px', height:'10px', background:C.hlBorder, opacity:'0.6' }));
+  }
+
+  function _rebuild() {
+    if (!_cont) return;
+    _orient = _orientNow();
+    _cont.innerHTML = '';
+    _pEls = []; _aEls = []; _endEl = null;
+
+    const landscape = _orient === 'landscape';
+    const tileSize  = _calcTileSize(landscape);
+    const gap       = 3;
+    const endW      = Math.round(tileSize * 1.1);
+    const endH      = tileSize * 2 + 8;
+    const total     = _pathLen + 2;
+
+    const root = _mk('div', { fontFamily:"'Space Mono',monospace", userSelect:'none', display:'flex', flexDirection:'column', gap:'4px', width:'100%' });
+    const grid = _mk('div', {
+      display:'grid',
+      gridTemplateColumns:`40px 1fr 14px ${endW}px`,
+      gridTemplateRows:`${tileSize}px ${tileSize}px`,
+      gap:'6px 0', alignItems:'center', width:'100%',
+    });
+
+    grid.appendChild(_mk('div', { fontFamily:"'Space Mono',monospace", fontSize:'7px', letterSpacing:'2px', color:C.labelText, display:'flex', alignItems:'center', paddingRight:'6px', whiteSpace:'nowrap', gridColumn:'1', gridRow:'1' }, 'PLAYER'));
+    grid.appendChild(_mk('div', { fontFamily:"'Space Mono',monospace", fontSize:'7px', letterSpacing:'2px', color:C.labelText, display:'flex', alignItems:'center', paddingRight:'6px', whiteSpace:'nowrap', gridColumn:'1', gridRow:'2' }, 'AI'));
+
+    function makeRow(gRow) {
+      return _mk('div', { display:'flex', gap:gap+'px', overflowX:'auto', overflowY:'hidden', height:tileSize+'px', alignItems:'center', scrollbarWidth:'thin', gridColumn:'2', gridRow:gRow });
+    }
+    const pRow = makeRow('1');
+    const aRow = makeRow('2');
+
+    for (let i = 0; i < total - 1; i++) {
+      const pt = _buildTile('player', i, tileSize); _pEls[i] = pt; pRow.appendChild(pt);
+      const at = _buildTile('ai', i, tileSize);     _aEls[i] = at; aRow.appendChild(at);
+    }
+
+    function makeConn(gRow) {
+      const c = _mk('div', { display:'flex', alignItems:'center', justifyContent:'center', height:'100%', gridColumn:'3', gridRow:gRow });
+      c.appendChild(_mk('div', { width:'100%', height:'1px', background:C.connectorColor }));
+      return c;
+    }
+
+    _endEl = _mk('div', { width:endW+'px', height:endH+'px', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:'4px', background:C.endBg, border:`2px solid ${C.endBorder}`, boxShadow:`0 0 14px ${C.endGlow}, inset 0 0 10px ${C.endGlow}`, flexShrink:'0', position:'relative', gridColumn:'4', gridRow:'1 / 3' });
+    _pEls[total - 1] = _endEl;
+    _aEls[total - 1] = _endEl;
+
+    grid.appendChild(pRow); grid.appendChild(makeConn('1'));
+    grid.appendChild(aRow); grid.appendChild(makeConn('2'));
+    grid.appendChild(_endEl);
+    root.appendChild(grid);
+    _cont.appendChild(root);
+
+    for (let i = 0; i < total; i++) { _paintTile('player', i); _paintTile('ai', i); }
+  }
+
+  function _setTile(path, index, state, data) {
+    if (!_data[path] || index < 0 || index >= _data[path].length) return;
+    _data[path][index].state = state;
+    _data[path][index].data  = data ?? null;
+    _paintTile(path, index);
+  }
+
+  function _animateMove(path, from, to, onComplete) {
+    if (from === to) { onComplete?.(); return; }
+    const endI   = _endIdx();
+    const tokSt  = path === 'player' ? 'player_token' : 'ai_token';
+    const step   = to > from ? 1 : -1;
+    let cur      = from;
+    function tick() {
+      _setTile(path, cur, cur === endI ? 'end' : 'empty', null);
+      cur += step;
+      _setTile(path, cur, tokSt, null);
+      if (cur === to) { onComplete?.(); } else { setTimeout(tick, 90); }
+    }
+    setTimeout(tick, 90);
+  }
+
+  return {
+    mount(el)              { _cont = el; },
+
+    initBoard(pathLen) {
+      _pathLen = pathLen;
+      const total = pathLen + 2;
+      _data.player = Array.from({ length: total }, (_, i) => _blank(i));
+      _data.ai     = Array.from({ length: total }, (_, i) => _blank(i));
+      _rebuild();
+      if (_resizeH) window.removeEventListener('resize', _resizeH);
+      _resizeH = () => { const o = _orientNow(); if (o !== _orient) { _orient = o; _rebuild(); } };
+      window.addEventListener('resize', _resizeH);
+    },
+
+    setTileState(path, index, state, data = null) { _setTile(path, index, state, data); },
+
+    clearBoard() {
+      if (!_pathLen) return;
+      const total = _pathLen + 2;
+      for (let i = 0; i < total; i++) {
+        _data.player[i] = _blank(i); _data.ai[i] = _blank(i);
+        _paintTile('player', i); _paintTile('ai', i);
+      }
+    },
+
+    animateMove(path, from, to, onComplete) { _animateMove(path, from, to, onComplete); },
+
+    getEndIndex()   { return _pathLen + 1; },
+    getPathLength() { return _pathLen; },
+  };
+})();
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+// face index → CSS transform that shows that face front-facing
+const FACE_SHOW = [
+  'rotateX(-22deg) rotateY(0deg)',
+  'rotateX(-22deg) rotateY(180deg)',
+  'rotateX(-22deg) rotateY(-90deg)',
+  'rotateX(-22deg) rotateY(90deg)',
+  'rotateX(-112deg) rotateY(0deg)',
+  'rotateX(68deg)  rotateY(0deg)',
+];
+
+// Unfolded die net (inverted cross, same as Bakuto.html)
+const NET = [
+  { col:1, row:0, fi:5, label:'BACK'   },
+  { col:1, row:1, fi:1, label:'TOP'    },
+  { col:0, row:2, fi:3, label:'LEFT'   },
+  { col:1, row:2, fi:0, label:'FRONT', center:true },
+  { col:2, row:2, fi:2, label:'RIGHT'  },
+  { col:1, row:3, fi:4, label:'BOTTOM' },
+];
+
+// ─── DiceCube3D ───────────────────────────────────────────────────────────────
+function DiceCube3D({ faces, rolling, transform, size = 108 }) {
+  const h = size / 2;
+  const POSITIONS = [
+    `translateZ(${h}px)`,
+    `rotateY(180deg) translateZ(${h}px)`,
+    `rotateY(90deg)  translateZ(${h}px)`,
+    `rotateY(-90deg) translateZ(${h}px)`,
+    `rotateX(90deg)  translateZ(${h}px)`,
+    `rotateX(-90deg) translateZ(${h}px)`,
+  ];
+  return (
+    <div style={{ perspective: 600, width: size, height: size, flexShrink: 0 }}>
+      <div style={{
+        width: size, height: size,
+        position: 'relative',
+        transformStyle: 'preserve-3d',
+        transform:  rolling ? undefined : transform,
+        transition: rolling ? 'none' : 'transform 0.38s cubic-bezier(0.25,0.46,0.45,0.94)',
+        animation:  rolling
+          ? 'diceRoll 0.92s cubic-bezier(0.12,0,0.28,1) forwards'
+          : 'none',
+      }}>
+        {POSITIONS.map((pos, i) => (
+          <div key={i} style={{
+            position: 'absolute',
+            width: size, height: size,
+            background: 'linear-gradient(148deg, #201508 0%, #0e0a06 100%)',
+            border: '2px solid #3d2c14',
+            boxShadow: 'inset 0 0 12px rgba(0,0,0,0.75)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            backfaceVisibility: 'hidden',
+            transform: pos,
+          }}>
+            {[[1,1],[1,-1],[-1,1],[-1,-1]].map(([sx,sy], ci) => (
+              <div key={ci} style={{
+                position: 'absolute',
+                top:    sy > 0 ? 5 : undefined,
+                bottom: sy < 0 ? 5 : undefined,
+                left:   sx > 0 ? 5 : undefined,
+                right:  sx < 0 ? 5 : undefined,
+                width: 6, height: 6,
+                borderTop:    sy > 0 ? '1px solid #3d2c14' : undefined,
+                borderBottom: sy < 0 ? '1px solid #3d2c14' : undefined,
+                borderLeft:   sx > 0 ? '1px solid #3d2c14' : undefined,
+                borderRight:  sx < 0 ? '1px solid #3d2c14' : undefined,
+              }}/>
+            ))}
+            <span style={{
+              fontFamily: "'Bebas Neue', sans-serif",
+              fontSize: Math.round(size * 0.43),
+              color: faces[i] === 0 ? '#2e2014' : '#e2d2b2',
+              lineHeight: 1,
+              textShadow: faces[i] !== 0 ? '0 2px 8px rgba(0,0,0,0.9)' : 'none',
+              userSelect: 'none',
+            }}>
+              {faces[i]}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── NetCell ──────────────────────────────────────────────────────────────────
+function NetCell({ fi, isCenter, value, remaining, zeroOverflow, onChange, onHover, onHoverEnd, isModified }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft]     = useState('');
+  const inputRef = useRef(null);
+  useEffect(() => { if (editing && inputRef.current) inputRef.current.select(); }, [editing]);
+
+  function commit(raw) {
+    setEditing(false);
+    onChange(fi, Math.max(0, parseInt(raw) || 0));
+  }
+  function nudge(delta) {
+    if (delta > 0 && remaining <= 0) return;
+    if (delta > 0 && remaining - delta < 0) return;
+    onChange(fi, Math.max(0, value + delta));
+  }
+
+  const isZero    = value === 0;
+  const warnZero  = isZero && zeroOverflow;
+  const accent    = isCenter ? '#c08820' : '#3a2812';
+  const bg        = isCenter ? '#1c1200' : '#120e08';
+
+  return (
+    <div
+      onMouseEnter={() => onHover(fi)}
+      onMouseLeave={onHoverEnd}
+      style={{
+        width: 72, height: 72,
+        background: bg,
+        border: `2px solid ${warnZero ? '#c42b24' : isModified ? '#4a6c2a' : accent}`,
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        position: 'relative', userSelect: 'none',
+        transition: 'border-color 0.15s',
+      }}
+    >
+      <span style={{
+        position: 'absolute', top: 3, left: 4,
+        fontFamily: "'Space Mono', monospace",
+        fontSize: 6, color: isCenter ? '#7a5a1a' : '#241a10',
+      }}>F{fi + 1}</span>
+
+      {warnZero && (
+        <div style={{ position: 'absolute', top: 4, right: 4, width: 5, height: 5, background: '#c42b24' }}/>
+      )}
+      {isModified && (
+        <div style={{ position: 'absolute', top: 4, right: 4, width: 5, height: 5, background: '#4a6c2a' }}/>
+      )}
+
+      {editing ? (
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={() => commit(draft)}
+          onKeyDown={e => {
+            if (e.key === 'Enter')  commit(draft);
+            if (e.key === 'Escape') { setEditing(false); }
+          }}
+          style={{
+            width: 42, background: 'transparent',
+            border: 'none', borderBottom: '2px solid #c08820',
+            fontFamily: "'Bebas Neue', sans-serif",
+            fontSize: 30, color: '#c08820',
+            textAlign: 'center', outline: 'none', padding: 0,
+          }}
+        />
+      ) : (
+        <div
+          onClick={() => { setDraft(String(value)); setEditing(true); }}
+          style={{
+            fontFamily: "'Bebas Neue', sans-serif",
+            fontSize: 36, lineHeight: 1,
+            color: isZero ? '#281a0c' : isCenter ? '#c08820' : '#ddd0b5',
+            cursor: 'text',
+          }}
+        >
+          {value}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 3, marginTop: 2 }}>
+        {[[-1,'−'],[1,'+']].map(([d, g]) => {
+          const dis = d > 0 && remaining <= 0;
+          return (
+            <button key={g} onClick={() => nudge(d)} style={{
+              width: 20, height: 15,
+              background: '#160e06',
+              border: `1px solid ${dis ? '#1a1410' : '#3a2a1e'}`,
+              color: dis ? '#221810' : '#706050',
+              fontFamily: "'Bebas Neue', sans-serif", fontSize: 15,
+              cursor: dis ? 'not-allowed' : 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
+            }}>{g}</button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── DicePanel ────────────────────────────────────────────────────────────────
+function DicePanel({ label, faces, mods, sumCap, maxZeros, aiSumCaps, aiSumCap, onAiSumCapChange, onFacesChange, onRoll, kakeActive, onToggleKake }) {
+  const [rolling,   setRolling]   = useState(false);
+  const [resultFi,  setResultFi]  = useState(0);
+  const [result,    setResult]    = useState(null);
+  const [showRes,   setShowRes]   = useState(false);
+  const [hoverFi,   setHoverFi]   = useState(-1);
+
+  const effectiveFaces = getEffectiveFaces(faces, mods);
+  const sum            = faces.reduce((a, b) => a + b, 0);
+  const remaining      = sumCap - sum;
+  const overCap        = sum > sumCap;
+  const zeroCount      = faces.filter(v => v === 0).length;
+  const tooZeros       = maxZeros !== null && zeroCount > maxZeros;
+  const valid          = !overCap && !tooZeros;
+
+  const barPct   = Math.min(100, (sum / sumCap) * 100);
+  const barColor = overCap ? '#c42b24' : sum >= sumCap - 2 ? '#c08820' : sum >= sumCap - 7 ? '#a06010' : '#4e8a4e';
+
+  const transform = hoverFi >= 0 ? FACE_SHOW[hoverFi] : FACE_SHOW[resultFi];
+
+  function roll() {
+    if (rolling) return;
+    setRolling(true);
+    setShowRes(false);
+    const eff = getEffectiveFaces(faces, mods);
+    const fi  = Math.floor(Math.random() * 6);
+    setTimeout(() => {
+      const val = eff[fi];
+      setResultFi(fi);
+      setResult(val);
+      setRolling(false);
+      setShowRes(true);
+      onRoll?.(val);
+    }, 960);
+  }
+
+  function changeFace(fi, val) {
+    const next = [...faces];
+    next[fi] = val;
+    const nextSum = next.reduce((a, b) => a + b, 0);
+    if (nextSum > sumCap && val > faces[fi]) return;
+    onFacesChange(next);
+  }
+
+  const modsActive = mods.length > 0;
+  const isAi = !!aiSumCaps;
+
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
+      padding: '16px 12px',
+      borderRight: isAi ? 'none' : '1px solid #1c1410',
+      minWidth: 260,
+    }}>
+      {/* ── Label ── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, alignSelf: 'stretch' }}>
+        <span style={{
+          fontFamily: "'Bebas Neue', sans-serif",
+          fontSize: 18, letterSpacing: 5, color: '#ddd0b5',
+        }}>{label}</span>
+        {modsActive && (
+          <span style={{
+            fontFamily: "'Space Mono', monospace",
+            fontSize: 7, letterSpacing: 2, color: '#4a6c2a',
+            border: '1px solid #2a3a1a', padding: '1px 5px',
+          }}>MODIFIED</span>
+        )}
+        {onToggleKake && (
+          <button onClick={onToggleKake} style={{
+            fontFamily: "'Space Mono', monospace", fontSize: 7, letterSpacing: 1,
+            padding: '2px 8px',
+            background: kakeActive ? '#4a6c2a' : '#0e0b08',
+            color:      kakeActive ? '#c8e8a8' : '#2a4a1a',
+            border:     `1px solid ${kakeActive ? '#4a6c2a' : '#2a3a1a'}`,
+            cursor: 'pointer',
+          }}>KAKE +2</button>
+        )}
+        <div style={{ flex: 1 }} />
+        {!valid && (
+          <span style={{
+            fontFamily: "'Space Mono', monospace", fontSize: 7,
+            color: '#c42b24', letterSpacing: 1,
+          }}>{overCap ? '▲ OVER CAP' : '▲ TOO MANY 0s'}</span>
+        )}
+      </div>
+
+      {/* ── AI sum cap selector ── */}
+      {aiSumCaps && (
+        <div style={{ display: 'flex', gap: 4, alignSelf: 'stretch' }}>
+          <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#2a2018', letterSpacing: 1, alignSelf: 'center', marginRight: 4 }}>
+            CAP
+          </span>
+          {aiSumCaps.map(cap => (
+            <button key={cap} onClick={() => onAiSumCapChange(cap)} style={{
+              fontFamily: "'Bebas Neue', sans-serif", fontSize: 16, letterSpacing: 2,
+              padding: '3px 10px',
+              background: cap === aiSumCap ? '#c08820' : '#120e08',
+              color:      cap === aiSumCap ? '#09070a' : '#4a3820',
+              border:     `1px solid ${cap === aiSumCap ? '#c08820' : '#2a2010'}`,
+              cursor: 'pointer',
+            }}>{cap}</button>
+          ))}
+        </div>
+      )}
+
+      {/* ── 3D die + roll ── */}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}>
+        <span style={{
+          fontFamily: "'Space Mono', monospace", fontSize: 7,
+          letterSpacing: 3, color: '#1e1610', marginBottom: 8,
+        }}>
+          {rolling ? 'ROLLING...' : 'TAP TO ROLL'}
+        </span>
+
+        <div
+          onClick={roll}
+          style={{ cursor: rolling ? 'default' : 'pointer', position: 'relative', padding: 16 }}
+        >
+          <div style={{
+            position: 'absolute', inset: 0, pointerEvents: 'none',
+            background: 'radial-gradient(ellipse at center, rgba(192,136,32,0.07) 0%, transparent 68%)',
+          }}/>
+          <DiceCube3D
+            faces={effectiveFaces}
+            rolling={rolling}
+            transform={transform}
+            size={108}
+          />
+        </div>
+
+        {/* ── Roll result ── */}
+        <div style={{ height: 52, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {showRes && !rolling ? (
+            <div style={{ textAlign: 'center', animation: 'popIn 0.26s ease-out' }}>
+              <div style={{
+                fontFamily: "'Bebas Neue', sans-serif",
+                fontSize: 52, lineHeight: 1, letterSpacing: 2,
+                color: result === 0 ? '#c42b24' : '#c08820',
+                textShadow: result === 0
+                  ? '0 0 20px rgba(196,43,36,0.65)'
+                  : '0 0 20px rgba(192,136,32,0.65)',
+              }}>{result}</div>
+              {result === 0 && (
+                <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, letterSpacing: 3, color: '#c42b24', marginTop: 1 }}>
+                  TURN LOST
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {/* ── Effective faces readout (when mods active) ── */}
+      {modsActive && (
+        <div style={{
+          alignSelf: 'stretch',
+          background: '#0d110a',
+          border: '1px solid #2a3a1a',
+          padding: '7px 10px',
+        }}>
+          <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#3a5a1a', letterSpacing: 1, marginBottom: 4 }}>
+            EFFECTIVE FACES
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {effectiveFaces.map((v, i) => (
+              <span key={i} style={{
+                fontFamily: "'Bebas Neue', sans-serif",
+                fontSize: 22,
+                color: v !== faces[i] ? '#7ab04a' : '#3a5820',
+              }}>{v}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Net divider ── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, alignSelf: 'stretch' }}>
+        <div style={{ flex: 1, height: 1, background: '#1c1410' }}/>
+        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#251a10', letterSpacing: 2 }}>CONFIGURE</span>
+        <div style={{ flex: 1, height: 1, background: '#1c1410' }}/>
+      </div>
+
+      {/* ── Unfolded net ── */}
+      <div style={{ position: 'relative' }}>
+        <div style={{
+          position: 'absolute', left: 72 + 5, top: 0,
+          width: 72, height: 72 * 4 + 5 * 3,
+          background: 'rgba(192,136,32,0.018)', pointerEvents: 'none',
+        }}/>
+        <div style={{
+          position: 'absolute', left: 0, top: (72 + 5) * 2,
+          width: 72 * 3 + 5 * 2, height: 72,
+          background: 'rgba(192,136,32,0.018)', pointerEvents: 'none',
+        }}/>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, 72px)',
+          gridTemplateRows: 'repeat(4, 72px)',
+          gap: 5,
+        }}>
+          {Array.from({ length: 12 }).map((_, idx) => {
+            const col  = idx % 3;
+            const row  = Math.floor(idx / 3);
+            const cell = NET.find(c => c.col === col && c.row === row);
+            if (!cell) return <div key={idx} style={{ width: 72, height: 72 }}/>;
+            const effVal = effectiveFaces[cell.fi];
+            const isModified = effVal !== faces[cell.fi];
+            return (
+              <NetCell
+                key={idx}
+                fi={cell.fi}
+                label={cell.label}
+                isCenter={!!cell.center}
+                value={faces[cell.fi]}
+                remaining={remaining}
+                zeroOverflow={tooZeros}
+                isModified={isModified}
+                onChange={changeFace}
+                onHover={fi => setHoverFi(fi)}
+                onHoverEnd={() => setHoverFi(-1)}
+              />
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── Sum bar ── */}
+      <div style={{
+        alignSelf: 'stretch',
+        background: '#0e0b08', border: '1px solid #1c1410',
+        padding: '8px 12px',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+          <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#2a2018', letterSpacing: 1 }}>
+            FACE SUM
+          </span>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 3 }}>
+            <span style={{
+              fontFamily: "'Bebas Neue', sans-serif", fontSize: 30, lineHeight: 1,
+              color: barColor, textShadow: `0 0 10px ${barColor}55`, transition: 'color 0.2s',
+            }}>{sum}</span>
+            <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, color: '#2a2018' }}>/ {sumCap}</span>
+          </div>
+        </div>
+        <div style={{ height: 3, background: '#181410', position: 'relative', marginBottom: 6 }}>
+          <div style={{
+            position: 'absolute', top: 0, left: 0, bottom: 0,
+            width: `${barPct}%`, background: barColor,
+            boxShadow: `0 0 5px ${barColor}88`, transition: 'width 0.15s, background 0.2s',
+          }}/>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: overCap ? '#c42b24' : remaining === 0 ? '#c08820' : '#2a2018' }}>
+            {overCap ? '▲ OVER CAP' : remaining > 0 ? `${remaining} remaining` : 'CAP REACHED'}
+          </span>
+          {maxZeros !== null && (
+            <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: tooZeros ? '#c42b24' : zeroCount > 0 ? '#504540' : '#2a2018' }}>
+              {zeroCount}/{maxZeros} zeros{tooZeros ? ' ▲' : ''}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── ModifierPanel ────────────────────────────────────────────────────────────
+function ModifierPanel({ playerMods, aiMods, onAddMod, onClearMods, onTickRound }) {
+  const MOD_PRESETS = [
+    { label: 'KASUMASHI  +3', shortLabel: '+3', type: 'add_to_highest',        value: 3, rounds: 2, color: '#4a6c2a' },
+    { label: 'MEZURI  −2',    shortLabel: '−2', type: 'subtract_from_highest', value: 2, rounds: 3, color: '#8a2a1a' },
+  ];
+
+  function renderModList(mods) {
+    if (mods.length === 0) {
+      return (
+        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#2a2018', letterSpacing: 1 }}>
+          none
+        </span>
+      );
+    }
+    return mods.map((m, i) => {
+      const preset = MOD_PRESETS.find(p => p.type === m.type && p.value === m.value);
+      return (
+        <div key={i} style={{
+          fontFamily: "'Space Mono', monospace", fontSize: 7,
+          color: preset ? preset.color : '#a08060',
+          letterSpacing: 0.5,
+        }}>
+          • {preset ? preset.label : m.type}  ({m.roundsLeft}r left)
+        </div>
+      );
+    });
+  }
+
+  const col = (side, mods) => (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#4a3820', letterSpacing: 3 }}>
+        {side}
+      </span>
+
+      {/* Apply buttons */}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {MOD_PRESETS.map(p => (
+          <button key={p.type} onClick={() => onAddMod(side, p.type, p.value, p.rounds)} style={{
+            fontFamily: "'Space Mono', monospace", fontSize: 7, letterSpacing: 0.5,
+            padding: '5px 10px',
+            background: '#0e0b08',
+            color: p.color,
+            border: `1px solid ${p.color}55`,
+            cursor: 'pointer',
+          }}>
+            {p.label}  ×{p.rounds}r
+          </button>
+        ))}
+        {mods.length > 0 && (
+          <button onClick={() => onClearMods(side)} style={{
+            fontFamily: "'Space Mono', monospace", fontSize: 7, letterSpacing: 0.5,
+            padding: '5px 10px', background: '#0e0b08', color: '#3a2a20',
+            border: '1px solid #2a1c10', cursor: 'pointer',
+          }}>
+            CLEAR
+          </button>
+        )}
+      </div>
+
+      {/* Active mods */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minHeight: 20 }}>
+        {renderModList(mods)}
+      </div>
+    </div>
+  );
+
+  const anyMods = playerMods.length > 0 || aiMods.length > 0;
+
+  return (
+    <div style={{
+      borderTop: '1px solid #1c1410',
+      padding: '14px 16px 20px',
+    }}>
+      {/* Divider label */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+        <div style={{ flex: 1, height: 1, background: '#1c1410' }}/>
+        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#251a10', letterSpacing: 2 }}>
+          MODIFIERS
+        </span>
+        <div style={{ flex: 1, height: 1, background: '#1c1410' }}/>
+      </div>
+
+      {/* Two columns */}
+      <div style={{ display: 'flex', gap: 20, marginBottom: 16 }}>
+        {col('PLAYER', playerMods)}
+        <div style={{ width: 1, background: '#1c1410' }}/>
+        {col('AI', aiMods)}
+      </div>
+
+      {/* Next round */}
+      <div style={{ display: 'flex', justifyContent: 'center' }}>
+        <button
+          onClick={onTickRound}
+          disabled={!anyMods}
+          style={{
+            fontFamily: "'Bebas Neue', sans-serif", fontSize: 16, letterSpacing: 5,
+            padding: '9px 28px',
+            background: anyMods ? '#0e0b08' : '#09070a',
+            color:      anyMods ? '#c08820'  : '#1c1410',
+            border:     `1px solid ${anyMods ? '#c08820' : '#1a1410'}`,
+            cursor:     anyMods ? 'pointer'  : 'not-allowed',
+            transition: 'all 0.2s',
+          }}
+        >
+          NEXT ROUND →
+        </button>
+      </div>
+
+      {!anyMods && (
+        <div style={{ textAlign: 'center', marginTop: 8 }}>
+          <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#201810', letterSpacing: 1 }}>
+            apply a modifier above to enable round ticking
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+function App() {
+  // ── Dice state ──────────────────────────────────────────────────────────────
+  const [playerFaces, setPlayerFaces] = useState([4, 4, 4, 3, 3, 3]);
+  const [playerMods,  setPlayerMods]  = useState([]);
+
+  const [aiFaces,    setAiFaces]   = useState([4, 4, 4, 3, 3, 3]);
+  const [aiSumCap,   setAiSumCap]  = useState(22);
+  const [aiMods,     setAiMods]    = useState([]);
+
+  // ── Board / movement state ───────────────────────────────────────────────────
+  const boardRef              = useRef(null);
+  const [boardMounted,  setBoardMounted]  = useState(false);
+  const [pathLength,    setPathLength]    = useState(8);
+  const [playerPos,     setPlayerPos]     = useState(0);
+  const [aiPos,         setAiPos]         = useState(0);
+  const [playerKake,    setPlayerKake]    = useState(false);
+  const [aiKake,        setAiKake]        = useState(false);
+  const [lastEvent,     setLastEvent]     = useState(null);
+
+  // Mount board once the ref div is in the DOM
+  useEffect(() => {
+    if (boardRef.current && !boardMounted) {
+      board.mount(boardRef.current);
+      board.initBoard(pathLength);
+      board.setTileState('player', 0, 'player_token');
+      board.setTileState('ai',     0, 'ai_token');
+      setBoardMounted(true);
+    }
+  }, [boardRef.current]);
+
+  function handlePathLength(pl) {
+    setPathLength(pl);
+    setPlayerPos(0);
+    setAiPos(0);
+    setLastEvent(null);
+    if (boardMounted) {
+      board.initBoard(pl);
+      board.setTileState('player', 0, 'player_token');
+      board.setTileState('ai',     0, 'ai_token');
+    }
+  }
+
+  function handleReset() {
+    setPlayerPos(0);
+    setAiPos(0);
+    setLastEvent(null);
+    if (boardMounted) {
+      board.clearBoard();
+      board.setTileState('player', 0, 'player_token');
+      board.setTileState('ai',     0, 'ai_token');
+    }
+  }
+
+  function handlePlayerRoll(result) {
+    const moveMods = playerKake ? [{ type: 'extra_tiles', value: 2 }] : [];
+    const { newPosition, landedOnEnd, overshoot } = resolveMove(playerPos, result, pathLength, moveMods);
+    const endIdx = pathLength + 1;
+
+    if (overshoot > 0) {
+      board.animateMove('player', playerPos, endIdx, () =>
+        board.animateMove('player', endIdx, newPosition, null));
+    } else {
+      board.animateMove('player', playerPos, newPosition, null);
+    }
+    setPlayerPos(newPosition);
+
+    if (result === 0)        setLastEvent('Player: roll 0 — turn wasted');
+    else if (landedOnEnd)    setLastEvent('Player: LANDED ON END — mini-round win');
+    else if (overshoot > 0)  setLastEvent(`Player: overshoot by ${overshoot} → tile ${newPosition}`);
+    else                     setLastEvent(`Player: rolled ${result}${playerKake ? ' +2 KAKE' : ''} → tile ${newPosition}`);
+  }
+
+  function handleAiRoll(result) {
+    const moveMods = aiKake ? [{ type: 'extra_tiles', value: 2 }] : [];
+    const { newPosition, landedOnEnd, overshoot } = resolveMove(aiPos, result, pathLength, moveMods);
+    const endIdx = pathLength + 1;
+
+    if (overshoot > 0) {
+      board.animateMove('ai', aiPos, endIdx, () =>
+        board.animateMove('ai', endIdx, newPosition, null));
+    } else {
+      board.animateMove('ai', aiPos, newPosition, null);
+    }
+    setAiPos(newPosition);
+
+    if (result === 0)        setLastEvent('AI: roll 0 — turn wasted');
+    else if (landedOnEnd)    setLastEvent('AI: LANDED ON END — mini-round win');
+    else if (overshoot > 0)  setLastEvent(`AI: overshoot by ${overshoot} → tile ${newPosition}`);
+    else                     setLastEvent(`AI: rolled ${result}${aiKake ? ' +2 KAKE' : ''} → tile ${newPosition}`);
+  }
+
+  // ── Modifier state ───────────────────────────────────────────────────────────
+  let _modId = 0;
+  function addMod(side, type, value, rounds) {
+    const entry = { id: ++_modId, type, value, roundsLeft: rounds };
+    if (side === 'PLAYER') setPlayerMods(m => [...m, entry]);
+    else                   setAiMods(m => [...m, entry]);
+  }
+  function clearMods(side) {
+    if (side === 'PLAYER') setPlayerMods([]);
+    else                   setAiMods([]);
+  }
+  function tickRound() {
+    const tick = mods => mods
+      .map(m => ({ ...m, roundsLeft: m.roundsLeft - 1 }))
+      .filter(m => m.roundsLeft > 0);
+    setPlayerMods(tick);
+    setAiMods(tick);
+  }
+
+  return (
+    <div style={{
+      width: '100%',
+      background: '#09070a',
+      position: 'relative',
+    }}>
+      {/* Background ember */}
+      <div style={{
+        position: 'fixed', inset: 0, pointerEvents: 'none',
+        background: 'radial-gradient(ellipse at 50% 100%, rgba(120,14,6,0.14) 0%, transparent 55%)',
+      }}/>
+
+      {/* ── Header ── */}
+      <div style={{
+        padding: '10px 20px',
+        borderBottom: '1px solid #1c1410',
+        display: 'flex', alignItems: 'baseline', gap: 14,
+        position: 'sticky', top: 0, background: '#09070a', zIndex: 10,
+      }}>
+        <span style={{
+          fontFamily: "'Bebas Neue', sans-serif",
+          fontSize: 26, letterSpacing: 7, color: '#ddd0b5',
+        }}>BAKUTO</span>
+        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, letterSpacing: 2, color: '#2a1c10' }}>
+          DICE TEST
+        </span>
+        <div style={{ flex: 1 }}/>
+        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#2a1c10' }}>
+          PLAYER ≤ 21 · AI ≤ {aiSumCap} · MAX 3 ZEROS (PLAYER ONLY)
+        </span>
+      </div>
+
+      {/* ── Board section ── */}
+      <div style={{ borderBottom: '1px solid #1c1410', padding: '12px 16px 14px' }}>
+        {/* Path length + reset controls */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, letterSpacing: 2, color: '#2a2018' }}>PATH</span>
+          {[8, 11, 15, 19].map(pl => (
+            <button key={pl} onClick={() => handlePathLength(pl)} style={{
+              fontFamily: "'Bebas Neue', sans-serif", fontSize: 18, letterSpacing: 2,
+              padding: '3px 12px',
+              background: pl === pathLength ? '#c08820' : '#0e0b08',
+              color:      pl === pathLength ? '#09070a' : '#3a2812',
+              border:     `1px solid ${pl === pathLength ? '#c08820' : '#2a1c10'}`,
+              cursor: 'pointer',
+            }}>{pl}</button>
+          ))}
+          <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#1a1410' }}>
+            END={pathLength + 1}
+          </span>
+          <div style={{ flex: 1 }}/>
+          <button onClick={handleReset} style={{
+            fontFamily: "'Space Mono', monospace", fontSize: 7, letterSpacing: 1,
+            padding: '5px 12px', background: '#0e0b08', color: '#c42b24',
+            border: '1px solid #c42b2455', cursor: 'pointer',
+          }}>RESET</button>
+        </div>
+
+        {/* Board mount */}
+        <div ref={boardRef} style={{ background: '#09070a', border: '1px solid #1c1410', padding: '10px' }}/>
+
+        {/* Status row */}
+        <div style={{ marginTop: 8, display: 'flex', gap: 16, alignItems: 'center' }}>
+          <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#4a8aff' }}>
+            PLAYER tile {playerPos}{playerPos === pathLength + 1 ? ' — END' : ''}
+          </span>
+          <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#c42b24' }}>
+            AI tile {aiPos}{aiPos === pathLength + 1 ? ' — END' : ''}
+          </span>
+          {lastEvent && (
+            <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#c08820', flex: 1, textAlign: 'right' }}>
+              {lastEvent}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Two panels ── */}
+      <div style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        alignItems: 'flex-start',
+        gap: 0,
+      }}>
+        <DicePanel
+          label="PLAYER"
+          faces={playerFaces}
+          mods={playerMods}
+          sumCap={PLAYER_SUM_CAP}
+          maxZeros={PLAYER_MAX_ZEROS}
+          onFacesChange={setPlayerFaces}
+          onRoll={handlePlayerRoll}
+          kakeActive={playerKake}
+          onToggleKake={() => setPlayerKake(k => !k)}
+        />
+        <DicePanel
+          label="AI"
+          faces={aiFaces}
+          mods={aiMods}
+          sumCap={aiSumCap}
+          maxZeros={null}
+          aiSumCaps={AI_SUM_CAPS}
+          aiSumCap={aiSumCap}
+          onAiSumCapChange={cap => {
+            setAiSumCap(cap);
+            // If current AI sum exceeds new cap, clamp the last face down
+            const sum = aiFaces.reduce((a, b) => a + b, 0);
+            if (sum > cap) {
+              const next = [...aiFaces];
+              let excess = sum - cap;
+              for (let i = next.length - 1; i >= 0 && excess > 0; i--) {
+                const cut = Math.min(next[i], excess);
+                next[i] -= cut; excess -= cut;
+              }
+              setAiFaces(next);
+            }
+          }}
+          onFacesChange={setAiFaces}
+          onRoll={handleAiRoll}
+          kakeActive={aiKake}
+          onToggleKake={() => setAiKake(k => !k)}
+        />
+      </div>
+
+      {/* ── Modifier panel ── */}
+      <ModifierPanel
+        playerMods={playerMods}
+        aiMods={aiMods}
+        onAddMod={addMod}
+        onClearMods={clearMods}
+        onTickRound={tickRound}
+      />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

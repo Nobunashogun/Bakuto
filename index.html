@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Bakuto">
+  <meta name="theme-color" content="#000000">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icons/icon-192.svg">
+  <title>BAKUTO</title>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: #070a0f;
+      color: #c4d4e0;
+      font-family: 'Space Mono', monospace;
+      -webkit-font-smoothing: antialiased;
+      overflow: hidden;
+    }
+
+    #root { width: 100%; height: 100%; }
+
+    body::after {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: repeating-linear-gradient(
+        0deg, transparent, transparent 3px,
+        rgba(0,0,0,0.04) 3px, rgba(0,0,0,0.04) 4px
+      );
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    button { -webkit-tap-highlight-color: transparent; font-family: inherit; cursor: pointer; }
+    button:active { opacity: 0.75; }
+
+    ::-webkit-scrollbar { width: 3px; }
+    ::-webkit-scrollbar-track { background: #070a0f; }
+    ::-webkit-scrollbar-thumb { background: #1c2838; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// ── Storage ───────────────────────────────────────────────────────────────────
+const STORAGE_RUN   = 'bakuto_run';
+const STORAGE_CLOCK = 'bakuto_clock';
+const STARTING_MS   = 86_400_000; // 24 h
+const NEAR_ZERO_MS  = STARTING_MS * 0.10; // 8,640,000 ms = 2h 24m
+
+// ── Depth tiers (GDD §4) ──────────────────────────────────────────────────────
+const TIERS = [
+  { min:  1, max:  5,       pct: 0.02, pathLen:  8 },
+  { min:  6, max: 15,       pct: 0.03, pathLen: 11 },
+  { min: 16, max: 30,       pct: 0.05, pathLen: 15 },
+  { min: 31, max: Infinity, pct: 0.07, pathLen: 19 },
+];
+
+// ── Cheat roster (GDD §6) ─────────────────────────────────────────────────────
+const ROSTER = [
+  { id:'KAKE',       jap:'駆け',     name:'HELLSTEP',       cat:'good', tier:'low',    mult:1.0, desc:'Move forward 2 extra tiles this turn.' },
+  { id:'TOME',       jap:'止め',     name:'SOUL ANCHOR',    cat:'good', tier:'medium', mult:1.5, desc:'Next overshoot lands exactly on END. One-time.' },
+  { id:'SHIKOMI',    jap:'仕込み',   name:'LOADED',         cat:'good', tier:'low',    mult:1.0, desc:'Reroll once this turn, keep the higher result.' },
+  { id:'KASUMASHI',  jap:'嵩増し',   name:'DEAD WEIGHT',    cat:'good', tier:'medium', mult:1.5, desc:'+3 to highest dice face for 2 rounds.' },
+  { id:'MACHI',      jap:'待ち',     name:'PURGATORY LOOP', cat:'good', tier:'low',    mult:1.0, desc:'Rolling 0 allows one reroll for 3 rounds.' },
+  { id:'KEPPAN',     jap:'血判',     name:'BLOOD PACT',     cat:'good', tier:'high',   mult:2.0, desc:'Doubles the pot at moment of activation.' },
+  { id:'ASHIDOME',   jap:'足止め',   name:'CURSED GROUND',  cat:'bad',  tier:'low',    mult:1.0, desc:'Opponent loses their next turn.' },
+  { id:'KECHIRASHI', jap:'蹴散らし', name:'HELLFIRE TRAP',  cat:'bad',  tier:'medium', mult:1.5, desc:'Opponent sent back 3 tiles.' },
+  { id:'MEZURI',     jap:'目削り',   name:'DICE ROT',       cat:'bad',  tier:'medium', mult:1.5, desc:"Opponent's highest face −2 for 3 rounds." },
+  { id:'MISEGANE',   jap:'見せ金',   name:'FALSE END',      cat:'bad',  tier:'high',   mult:2.0, desc:'Opponent bounces back 5 tiles. Forward movement only.' },
+  { id:'TORITATE',   jap:'取り立て', name:'DEBT COLLECTOR', cat:'bad',  tier:'high',   mult:2.0, desc:"Drains one blind fee from the AI's fight pool." },
+  { id:'ASHIKASE',   jap:'足枷',     name:'LEAD BOOTS',     cat:'bad',  tier:'medium', mult:1.5, desc:"Opponent's movement halved for 2 rounds." },
+];
+
+// ── Flavor text sets (GDD §20) ────────────────────────────────────────────────
+const FLAVOR_OFISU = [
+  'Still here.',
+  'Back again.',
+  'The wait never gets shorter.',
+];
+
+const FLAVOR_NEAR_ZERO = [
+  'Almost nothing left.',
+  'The house is running out of patience.',
+  "Time doesn't come back.",
+];
+
+function pickFlavor(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+// ── Pure helpers ──────────────────────────────────────────────────────────────
+function getTier(lv) { return TIERS.find(t => lv >= t.min && lv <= t.max) ?? TIERS[0]; }
+
+function fmtMs(ms) {
+  const s = Math.floor(Math.max(0, ms) / 1000);
+  return [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60]
+    .map(n => String(n).padStart(2, '0')).join(':');
+}
+
+function fmtMsShort(ms) {
+  const s = Math.floor(Math.max(0, ms) / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+// ── Clock (epoch-based, drains through closures) ──────────────────────────────
+function clockRead() {
+  try {
+    const raw = localStorage.getItem(STORAGE_CLOCK);
+    if (!raw) return 0;
+    const { savedMs, epochMs } = JSON.parse(raw);
+    return Math.max(0, savedMs - (Date.now() - epochMs));
+  } catch { return 0; }
+}
+
+function clockWrite(ms) {
+  localStorage.setItem(STORAGE_CLOCK, JSON.stringify({
+    savedMs: Math.max(0, ms),
+    epochMs: Date.now(),
+  }));
+}
+
+function clockDeduct(ms) { const next = Math.max(0, clockRead() - ms); clockWrite(next); return next; }
+
+function clockInit() {
+  if (!localStorage.getItem(STORAGE_CLOCK)) {
+    clockWrite((runRead().timeMs) ?? STARTING_MS);
+  }
+}
+
+// ── Run state ─────────────────────────────────────────────────────────────────
+function freshRun() {
+  return {
+    timeMs:            STARTING_MS,
+    dungeonLevel:      0,
+    lastBackRoomLevel: 0,
+    lastBossLevel:     0,   // set after Boss fight; distinguishes "in special" from "completed"
+    cheatInventory:    [],
+    diceConfig:        [null, null, null, null, null, null],
+  };
+}
+
+function runRead() {
+  try { const s = localStorage.getItem(STORAGE_RUN); if (s) return { ...freshRun(), ...JSON.parse(s) }; }
+  catch {}
+  return freshRun();
+}
+
+function runWrite(s) { localStorage.setItem(STORAGE_RUN, JSON.stringify(s)); }
+function runReset()  { runWrite(freshRun()); clockWrite(STARTING_MS); }
+
+function addCheatToRun(id) {
+  const s = runRead();
+  if (!s.cheatInventory.includes(id)) runWrite({ ...s, cheatInventory: [...s.cheatInventory, id] });
+}
+
+// ── Design tokens ─────────────────────────────────────────────────────────────
+const C = {
+  bg:      '#070a0f',
+  surface: '#0c1018',
+  border:  '#1c2838',
+  text:    '#c4d4e0',
+  muted:   '#3a4a5a',
+  faint:   '#0f1520',
+  red:     '#cc2222',
+  redDim:  '#551111',
+  blue:    '#336688',
+  good:    '#1e4a6a',
+  bad:     '#5a1a1a',
+  goodTxt: '#6aaecc',
+  badTxt:  '#cc6666',
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DeathScreen
+// ─────────────────────────────────────────────────────────────────────────────
+function DeathScreen({ onReset }) {
+  return (
+    <div
+      onClick={onReset}
+      style={{
+        position: 'fixed', inset: 0,
+        background: '#000000',
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        cursor: 'pointer', userSelect: 'none',
+      }}
+    >
+      <p style={{
+        fontFamily: 'Georgia, "Times New Roman", serif',
+        fontStyle: 'italic',
+        fontSize: 'clamp(28px, 7vw, 52px)',
+        color: '#ffffff',
+        letterSpacing: '0.02em',
+      }}>
+        Time's up.
+      </p>
+      <p style={{
+        marginTop: 20,
+        fontFamily: 'Georgia, "Times New Roman", serif',
+        fontStyle: 'italic',
+        fontSize: 'clamp(13px, 3.5vw, 20px)',
+        color: '#444444',
+        letterSpacing: '0.02em',
+      }}>
+        A true gambler never quits.
+      </p>
+      <p style={{
+        marginTop: 36,
+        fontFamily: "'Space Mono', monospace",
+        fontSize: 10,
+        color: '#1e1e1e',
+        letterSpacing: '0.12em',
+        textTransform: 'uppercase',
+      }}>
+        tap anywhere to continue
+      </p>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DiceConfigScreen
+// ─────────────────────────────────────────────────────────────────────────────
+const DICE_SUM_CAP = 21;
+
+function DiceConfigScreen({ onDone }) {
+  const [faces, setFaces] = useState([0, 0, 0, 0, 0, 0]);
+  const sum = faces.reduce((a, b) => a + b, 0);
+  const canConfirm = sum > 0;
+
+  function inc(i) {
+    if (sum >= DICE_SUM_CAP) return;
+    setFaces(f => { const n = [...f]; n[i] = Math.min(9, n[i] + 1); return n; });
+  }
+  function dec(i) {
+    setFaces(f => { const n = [...f]; n[i] = Math.max(0, n[i] - 1); return n; });
+  }
+  function confirm() {
+    if (!canConfirm) return;
+    const run = runRead();
+    runWrite({ ...run, diceConfig: faces });
+    onDone();
+  }
+
+  const btnSm = { border: 'none', color: '#fff', fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, letterSpacing: '0.04em', borderRadius: 2, padding: 0, lineHeight: 1 };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: C.bg, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 30, letterSpacing: '0.14em', color: C.text, marginBottom: 4 }}>BEFORE THE HAND</p>
+      <p style={{ fontSize: 10, color: C.muted, letterSpacing: '0.08em', marginBottom: 4 }}>SET YOUR FACES</p>
+      <p style={{ fontSize: 10, color: C.muted, letterSpacing: '0.08em', marginBottom: 32 }}>{DICE_SUM_CAP} HIRES ALLOWED</p>
+
+      <div style={{ display: 'flex', gap: 10, marginBottom: 28, flexWrap: 'wrap', justifyContent: 'center' }}>
+        {faces.map((val, i) => (
+          <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7 }}>
+            <button onClick={() => inc(i)} disabled={sum >= DICE_SUM_CAP}
+              style={{ ...btnSm, width: 50, height: 32, background: sum < DICE_SUM_CAP ? C.blue : C.muted, cursor: sum < DICE_SUM_CAP ? 'pointer' : 'default' }}>+</button>
+            <div style={{
+              width: 62, height: 62,
+              border: `2px solid ${val > 0 ? C.border : C.muted}`,
+              background: C.surface,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontFamily: "'Bebas Neue', sans-serif", fontSize: 40,
+              color: val > 0 ? C.text : C.muted,
+              borderRadius: 4,
+            }}>{val}</div>
+            <button onClick={() => dec(i)} disabled={val === 0}
+              style={{ ...btnSm, width: 50, height: 32, background: val > 0 ? C.redDim : C.muted, cursor: val > 0 ? 'pointer' : 'default' }}>−</button>
+          </div>
+        ))}
+      </div>
+
+      <p style={{ fontSize: 13, letterSpacing: '0.06em', marginBottom: 28 }}>
+        <span style={{ color: sum === DICE_SUM_CAP ? '#88cc88' : sum > 0 ? C.text : C.muted }}>{sum}</span>
+        <span style={{ color: C.muted }}> / {DICE_SUM_CAP}</span>
+      </p>
+
+      <button onClick={confirm} disabled={!canConfirm}
+        style={{
+          padding: '14px 48px',
+          background: canConfirm ? C.red : C.muted,
+          border: 'none', color: '#fff',
+          fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, letterSpacing: '0.14em',
+          borderRadius: 2, cursor: canConfirm ? 'pointer' : 'default',
+        }}>
+        LOCK IN
+      </button>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BackRoomScreen
+// ─────────────────────────────────────────────────────────────────────────────
+function BackRoomScreen({ isResuming, level, onBack }) {
+  const tier = getTier(Math.max(1, level));
+
+  const [slots] = useState(() => [...ROSTER].sort(() => Math.random() - 0.5).slice(0, 4));
+
+  const [ms, setMs]               = useState(clockRead);
+  const [purchased, setPurchased] = useState(new Set());
+
+  useEffect(() => {
+    const id = setInterval(() => setMs(clockRead()), 500);
+    return () => clearInterval(id);
+  }, []);
+
+  function calcCost(cheat) {
+    return Math.floor(cheat.mult * Math.floor(tier.pct * ms));
+  }
+
+  function buy(cheat) {
+    const cost = calcCost(cheat);
+    if (ms < cost) return;
+    const newMs = clockDeduct(cost);
+    addCheatToRun(cheat.id);
+    setMs(newMs);
+    setPurchased(p => new Set([...p, cheat.id]));
+  }
+
+  const ownedIds = runRead().cheatInventory;
+  const isLow    = ms < 3_600_000;
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: C.bg, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+      {/* Header */}
+      <div style={{ padding: '20px 24px 14px', borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+          <div>
+            <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 30, letterSpacing: '0.12em', color: C.red, lineHeight: 1 }}>THE BACK ROOM</p>
+            <p style={{ fontSize: 10, color: C.muted, letterSpacing: '0.1em', marginTop: 4 }}>裏部屋 &nbsp;/&nbsp; DEPTH {level}</p>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 24, letterSpacing: '0.06em', color: isLow ? C.red : C.text, lineHeight: 1 }}>{fmtMs(ms)}</p>
+            <p style={{ fontSize: 9, color: C.muted, letterSpacing: '0.08em', marginTop: 4 }}>TIME REMAINING</p>
+          </div>
+        </div>
+
+        {isResuming && (
+          <div style={{ marginTop: 12, padding: '7px 12px', background: C.faint, border: `1px solid ${C.border}`, borderRadius: 2 }}>
+            <p style={{ fontSize: 10, color: C.muted, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Already visited — back room closed</p>
+          </div>
+        )}
+      </div>
+
+      {/* Cards */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '14px 24px' }}>
+        {!isResuming && (
+          <p style={{ fontSize: 9, letterSpacing: '0.14em', color: C.muted, marginBottom: 10, textTransform: 'uppercase' }}>For hire</p>
+        )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {slots.map(cheat => {
+            const cost   = calcCost(cheat);
+            const bought = purchased.has(cheat.id);
+            const owned  = ownedIds.includes(cheat.id);
+            const canBuy = !isResuming && !bought && !owned && ms >= cost;
+            const greyed = (isResuming || owned) && !bought;
+
+            return (
+              <div key={cheat.id} style={{
+                padding: '14px 14px',
+                background: C.surface,
+                border: `1px solid ${greyed ? C.border : cheat.cat === 'good' ? C.good : C.bad}`,
+                borderRadius: 4,
+                opacity: greyed ? 0.38 : 1,
+                display: 'flex', alignItems: 'flex-start', gap: 12,
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                    <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 18, letterSpacing: '0.06em', color: cheat.cat === 'good' ? C.goodTxt : C.badTxt }}>
+                      {cheat.jap}
+                    </span>
+                    <span style={{ fontSize: 9, color: C.muted, letterSpacing: '0.08em' }}>{cheat.name}</span>
+                    <span style={{ fontSize: 9, color: C.muted, marginLeft: 'auto' }}>{cheat.tier.toUpperCase()}</span>
+                  </div>
+                  <p style={{ fontSize: 10, color: C.text, lineHeight: 1.55, marginBottom: isResuming ? 0 : 6 }}>{cheat.desc}</p>
+                  {!isResuming && (
+                    <p style={{ fontSize: 10, color: C.muted }}>
+                      COST&nbsp;
+                      <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, color: ms >= cost && !bought && !owned ? '#88cc88' : C.red }}>
+                        {fmtMsShort(cost)}
+                      </span>
+                    </p>
+                  )}
+                </div>
+
+                <div style={{ flexShrink: 0, paddingTop: 2 }}>
+                  {bought ? (
+                    <span style={{ fontSize: 9, color: '#88cc88', letterSpacing: '0.1em' }}>TAKEN</span>
+                  ) : owned ? (
+                    <span style={{ fontSize: 9, color: C.muted, letterSpacing: '0.1em' }}>OWNED</span>
+                  ) : isResuming ? null : (
+                    <button
+                      onClick={() => buy(cheat)}
+                      disabled={!canBuy}
+                      style={{
+                        padding: '8px 10px',
+                        background: canBuy ? C.red : C.muted,
+                        border: 'none', color: '#fff',
+                        fontFamily: "'Bebas Neue', sans-serif", fontSize: 11, letterSpacing: '0.07em',
+                        borderRadius: 2, cursor: canBuy ? 'pointer' : 'default',
+                      }}
+                    >TAKE THEM ON</button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div style={{ padding: '14px 24px 28px', borderTop: `1px solid ${C.border}`, flexShrink: 0 }}>
+        <button
+          onClick={onBack}
+          style={{
+            width: '100%', padding: 15,
+            background: 'transparent', border: `1px solid ${C.border}`, color: C.muted,
+            fontFamily: "'Bebas Neue', sans-serif", fontSize: 18, letterSpacing: '0.14em',
+            borderRadius: 2,
+          }}
+        >BACK OUT</button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OfisuScreen
+// ─────────────────────────────────────────────────────────────────────────────
+function OfisuScreen({ onDescend }) {
+  const [ms, setMs]   = useState(clockRead);
+  const [run, setRun] = useState(runRead);
+  const [rulesOpen, setRulesOpen]   = useState(false);
+  const [flavor]                    = useState(() => pickFlavor(FLAVOR_OFISU));
+  const [nearZeroMsg, setNearZeroMsg] = useState(null);
+  const nearZeroFired = useRef(false);
+  const isLow = ms < 3_600_000;
+
+  useEffect(() => {
+    // Fire near-zero once per session crossing
+    if (!nearZeroFired.current && ms > 0 && ms < NEAR_ZERO_MS) {
+      nearZeroFired.current = true;
+      setNearZeroMsg(pickFlavor(FLAVOR_NEAR_ZERO));
+    }
+
+    const id = setInterval(() => {
+      const cur = clockRead();
+      setMs(cur);
+      setRun(runRead());
+      if (!nearZeroFired.current && cur > 0 && cur < NEAR_ZERO_MS) {
+        nearZeroFired.current = true;
+        setNearZeroMsg(pickFlavor(FLAVOR_NEAR_ZERO));
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const inventory = (run.cheatInventory ?? []).map(id => ROSTER.find(c => c.id === id)).filter(Boolean);
+  const level     = run.dungeonLevel || 0;
+  const nextLevel = level + 1;
+  const tier      = getTier(Math.max(1, nextLevel));
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: C.bg, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+      {/* Clock — focal point */}
+      <div style={{ padding: '24px 24px 0', flexShrink: 0 }}>
+        <p style={{ fontSize: 9, color: C.muted, letterSpacing: '0.18em', marginBottom: 4 }}>OFISU / 事務所</p>
+        <p style={{ fontSize: 9, color: C.muted, letterSpacing: '0.14em', marginBottom: 6 }}>TIME REMAINING</p>
+        <p style={{
+          fontFamily: "'Bebas Neue', sans-serif",
+          fontSize: 'clamp(52px, 15vw, 90px)',
+          letterSpacing: '0.04em', lineHeight: 1.0,
+          color: isLow ? C.red : C.text,
+          transition: 'color 1s',
+        }}>
+          {fmtMs(ms)}
+        </p>
+        <p style={{ fontSize: 11, color: C.muted, fontStyle: 'italic', marginTop: 8, letterSpacing: '0.02em' }}>{flavor}</p>
+        {nearZeroMsg && (
+          <p style={{ fontSize: 11, color: C.red, fontStyle: 'italic', marginTop: 4, letterSpacing: '0.02em' }}>{nearZeroMsg}</p>
+        )}
+      </div>
+
+      <div style={{ margin: '16px 24px 0', height: 1, background: C.border, flexShrink: 0 }} />
+
+      {/* Inventory */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '14px 24px' }}>
+        <p style={{ fontSize: 9, letterSpacing: '0.14em', color: C.muted, marginBottom: 10, textTransform: 'uppercase' }}>On retainer</p>
+
+        {inventory.length === 0 ? (
+          <p style={{ fontSize: 11, color: C.muted, fontStyle: 'italic' }}>Nothing on retainer.</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+            {inventory.map(c => (
+              <div key={c.id} style={{
+                padding: '10px 12px',
+                background: C.surface,
+                border: `1px solid ${C.border}`,
+                borderLeft: `3px solid ${c.cat === 'good' ? C.goodTxt : C.badTxt}`,
+                borderRadius: 2,
+              }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', marginBottom: 3, flexWrap: 'wrap' }}>
+                  <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 16, letterSpacing: '0.06em', color: c.cat === 'good' ? C.goodTxt : C.badTxt }}>{c.jap}</span>
+                  <span style={{ fontSize: 9, color: C.muted, letterSpacing: '0.07em' }}>{c.name}</span>
+                </div>
+                <p style={{ fontSize: 10, color: C.text, opacity: 0.65, lineHeight: 1.4 }}>{c.desc}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Depth status bar */}
+      <div style={{ margin: '0 24px', padding: '10px 0', borderTop: `1px solid ${C.border}`, flexShrink: 0 }}>
+        <p style={{ fontSize: 9, color: C.muted, letterSpacing: '0.08em' }}>
+          {level > 0 ? `DEPTH ${level}` : 'SURFACE'}&nbsp;&nbsp;·&nbsp;&nbsp;NEXT: LV {nextLevel}&nbsp;&nbsp;·&nbsp;&nbsp;{tier.pathLen} TILES
+        </p>
+      </div>
+
+      {/* Actions */}
+      <div style={{ padding: '12px 24px 28px', display: 'flex', gap: 10, flexShrink: 0 }}>
+        <button
+          onClick={onDescend}
+          style={{
+            flex: 1, padding: 16,
+            background: C.red, border: 'none', color: '#fff',
+            fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, letterSpacing: '0.16em',
+            borderRadius: 2,
+          }}
+        >DESCEND</button>
+        <button
+          onClick={() => setRulesOpen(true)}
+          style={{
+            padding: '16px 18px',
+            background: 'transparent', border: `1px solid ${C.border}`, color: C.muted,
+            fontFamily: "'Bebas Neue', sans-serif", fontSize: 12, letterSpacing: '0.1em',
+            borderRadius: 2, lineHeight: 1.35, textAlign: 'center',
+          }}
+        >HOUSE<br/>RULES</button>
+      </div>
+
+      {/* House Rules overlay */}
+      {rulesOpen && (
+        <div
+          onClick={() => setRulesOpen(false)}
+          style={{
+            position: 'absolute', inset: 0,
+            background: 'rgba(7,10,15,0.97)',
+            display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center',
+            padding: 32, cursor: 'pointer',
+          }}
+        >
+          <p style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 28, letterSpacing: '0.14em', color: C.text, marginBottom: 20 }}>HOUSE RULES</p>
+          <p style={{ fontSize: 11, color: C.muted, textAlign: 'center', lineHeight: 1.9, maxWidth: 300 }}>
+            The rules are posted on the wall behind the desk.<br />
+            The desk has not moved in some time.<br />
+            Nobody asks about the desk.
+          </p>
+          <p style={{ marginTop: 36, fontSize: 9, color: '#1c2838', letterSpacing: '0.1em', textTransform: 'uppercase' }}>tap to close</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// App — router + global clock-zero watcher
+// ─────────────────────────────────────────────────────────────────────────────
+function App() {
+  const [screen, setScreen] = useState(() => {
+    clockInit();
+    return clockRead() <= 0 ? 'death' : 'ofisu';
+  });
+  const [backRoomCtx, setBackRoomCtx] = useState({ isResuming: false, level: 1 });
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (clockRead() <= 0 && screen !== 'death') setScreen('death');
+    }, 500);
+    return () => clearInterval(id);
+  }, [screen]);
+
+  function handleDeath() {
+    runReset();
+    setScreen('ofisu');
+  }
+
+  function handleDescend() {
+    const run = runRead();
+
+    const diceBlank = !run.diceConfig || run.diceConfig.every(f => f == null);
+    if (diceBlank) { setScreen('dice_config'); return; }
+
+    const lv = run.dungeonLevel || 0;
+
+    // Resume guard: player quit mid-way through the special level (after Back Room
+    // but before the Boss fight). Show the Back Room greyed-out so they can proceed
+    // straight to the Boss. Only applies while the Boss at this level is undefeated.
+    if (lv > 0 && lv === run.lastBackRoomLevel && run.lastBossLevel < lv) {
+      setBackRoomCtx({ isResuming: true, level: lv });
+      setScreen('back_room');
+      return;
+    }
+
+    const nextLevel = lv + 1;
+
+    // Special level trigger: fires AFTER the 7th (14th, 21st …) regular fight,
+    // not instead of it, so regular fight 7 still exists (GDD §2).
+    if (lv > 0 && lv % 7 === 0 && run.lastBossLevel < lv) {
+      runWrite({ ...run, lastBackRoomLevel: lv });
+      setBackRoomCtx({ isResuming: false, level: lv });
+      setScreen('back_room');
+      return;
+    }
+
+    runWrite({ ...run, dungeonLevel: nextLevel });
+    // TODO: route to battle screen when implemented
+    setScreen('ofisu');
+  }
+
+  function handleBackFromBackRoom() {
+    // TODO: route to boss fight (AI pool ×2) after Back Room completes.
+    // When the Boss fight is implemented, call handleBossWin() on victory instead.
+    setScreen('ofisu');
+  }
+
+  function handleBossWin() {
+    // Called after the player defeats the Boss on a special level.
+    // Records the defeated level so the next descend advances to the next
+    // regular fight instead of re-triggering the resume guard.
+    const run = runRead();
+    runWrite({ ...run, lastBossLevel: run.dungeonLevel });
+    setScreen('ofisu');
+  }
+
+  switch (screen) {
+    case 'death':       return <DeathScreen onReset={handleDeath} />;
+    case 'dice_config': return <DiceConfigScreen onDone={() => setScreen('ofisu')} />;
+    case 'back_room':   return <BackRoomScreen isResuming={backRoomCtx.isResuming} level={backRoomCtx.level} onBack={handleBackFromBackRoom} />;
+    default:            return <OfisuScreen onDescend={handleDescend} />;
+  }
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js');
+  });
+}
+</script>
+</body>
+</html>

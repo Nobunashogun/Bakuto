@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>BAKUTO — BOARD TEST</title>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; background: #09070a; color: #ddd0b5; font-family: 'Space Mono', monospace; -webkit-font-smoothing: antialiased; }
+    #root { width: 100%; }
+    body::after {
+      content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 9999;
+      background-image: repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,0,0,0.04) 3px, rgba(0,0,0,0.04) 4px);
+    }
+    button { -webkit-tap-highlight-color: transparent; }
+    button:active { opacity: 0.75; }
+    ::-webkit-scrollbar { width: 3px; height: 3px; }
+    ::-webkit-scrollbar-track { background: #09070a; }
+    ::-webkit-scrollbar-thumb { background: #2a1e16; }
+
+    /* Board container — renderer mounts here */
+    #board-mount {
+      background: #09070a;
+      border: 1px solid #1c1410;
+      padding: 12px;
+    }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback } = React;
+
+// ─── boardRenderer — inlined (mirrors src/renderers/boardRenderer.js) ─────────
+
+const C = {
+  pageBg:'#09070a', tileBg:'#120e08', tileBorder:'#1c1410',
+  startBg:'#0e0b07', startBorder:'#2a2010', startText:'#2a1c0e',
+  endBg:'#1a1200', endBorder:'#c08820', endGlow:'rgba(192,136,32,0.28)', endText:'#c08820',
+  playerBg:'#08102a', playerBorder:'#4a8aff', playerGlow:'rgba(74,138,255,0.35)', playerDot:'#4a8aff',
+  aiBg:'#200808', aiBorder:'#c42b24', aiGlow:'rgba(196,43,36,0.35)', aiDot:'#c42b24',
+  goodBg:'#080e06', goodBorder:'#4a6c2a', goodText:'#4a6c2a',
+  badBg:'#0e0706', badBorder:'#8a2a1a', badText:'#8a2a1a',
+  hlBorder:'#c08820', hlGlow:'rgba(192,136,32,0.55)',
+  labelText:'#3a2812', indexText:'#1c1208', connectorColor:'#2a1c10',
+};
+
+function mk(tag, styles, text) {
+  const e = document.createElement(tag);
+  if (styles) Object.assign(e.style, styles);
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+// Module-scope board state
+const board = (() => {
+  let _cont = null, _pathLen = 0, _pEls = [], _aEls = [], _endEl = null;
+  let _data = { player: [], ai: [] };
+  let _orient = null, _resizeH = null;
+
+  function _endIdx()  { return _pathLen + 1; }
+  function _blank(i)  { return { state: i === _pathLen + 1 ? 'end' : 'empty', data: null, highlighted: false }; }
+  function _orientNow() { return window.innerWidth > window.innerHeight ? 'landscape' : 'portrait'; }
+
+  function _calcTileSize(landscape) {
+    if (!_cont) return 36;
+    const avail = (_cont.clientWidth || window.innerWidth) - 40 - 14 - 60;
+    const count = _pathLen + 1;
+    const perTile = Math.floor((avail - count * 3) / count);
+    return Math.max(26, Math.min(landscape ? 46 : 36, perTile));
+  }
+
+  function _buildTile(path, index, size) {
+    const e = mk('div', {
+      width: size+'px', height: size+'px', flexShrink:'0',
+      display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+      position:'relative', overflow:'hidden',
+    });
+    e.dataset.path = path; e.dataset.index = String(index);
+    return e;
+  }
+
+  function _buildToken(color, glow) {
+    return mk('div', { width:'16px', height:'16px', borderRadius:'50%', background:color, boxShadow:`0 0 8px ${glow}`, marginTop:'8px' });
+  }
+
+  function _paintCheat(el, data) {
+    const good = data.category === 'good';
+    const color = good ? C.goodText : C.badText;
+    el.appendChild(mk('div', { position:'absolute', top:'3px', right:'3px', width:'5px', height:'5px', background:color }));
+    el.appendChild(mk('span', { fontFamily:"'Space Mono',monospace", fontSize:'6px', color, textAlign:'center', lineHeight:'1.4', padding:'0 3px', marginTop:'10px', wordBreak:'break-all', pointerEvents:'none' }, data.japName || data.name || '?'));
+  }
+
+  function _paintEnd() {
+    if (!_endEl) return;
+    const ei = _endIdx();
+    const ps = _data.player[ei]?.state;
+    const as = _data.ai[ei]?.state;
+    _endEl.innerHTML = '';
+    _endEl.appendChild(mk('span', { fontFamily:"'Bebas Neue',sans-serif", fontSize:'13px', color:C.endText, letterSpacing:'3px', lineHeight:'1' }, 'END'));
+    _endEl.appendChild(mk('span', { fontFamily:"'Space Mono',monospace", fontSize:'7px', color:'#4a3010', marginTop:'2px' }, '判'));
+    if (ps === 'player_token' || as === 'ai_token') {
+      const row = mk('div', { display:'flex', gap:'4px', marginTop:'4px', alignItems:'center' });
+      if (ps === 'player_token') row.appendChild(mk('div', { width:'8px', height:'8px', borderRadius:'50%', background:C.playerDot, boxShadow:`0 0 5px ${C.playerGlow}` }));
+      if (as === 'ai_token')    row.appendChild(mk('div', { width:'8px', height:'8px', borderRadius:'50%', background:C.aiDot, boxShadow:`0 0 5px ${C.aiGlow}` }));
+      _endEl.appendChild(row);
+    }
+  }
+
+  function _paintTile(path, index) {
+    if (index === _endIdx()) { _paintEnd(); return; }
+    const els = path === 'player' ? _pEls : _aEls;
+    const el  = els[index];
+    if (!el) return;
+    const { state, data, highlighted } = _data[path][index];
+    const isStart = index === 0;
+    el.innerHTML = '';
+
+    let bg = isStart ? C.startBg : C.tileBg;
+    let border = isStart ? C.startBorder : C.tileBorder;
+    let shadow = 'none';
+    if (highlighted) { border = C.hlBorder; shadow = `0 0 10px ${C.hlGlow}`; }
+    if      (state === 'player_token') { bg = C.playerBg; border = C.playerBorder; shadow = `0 0 10px ${C.playerGlow}`; }
+    else if (state === 'ai_token')     { bg = C.aiBg;     border = C.aiBorder;     shadow = `0 0 10px ${C.aiGlow}`; }
+    else if (state === 'cheat' && data) {
+      bg     = data.category === 'good' ? C.goodBg  : C.badBg;
+      border = data.category === 'good' ? C.goodBorder : C.badBorder;
+      if (highlighted) shadow = `0 0 10px ${C.hlGlow}`;
+    }
+    Object.assign(el.style, { background:bg, border:`1px solid ${border}`, boxShadow:shadow, transition:'border-color 0.15s, box-shadow 0.15s, background 0.15s' });
+
+    el.appendChild(mk('span', { position:'absolute', top:'2px', left:'3px', fontFamily:"'Space Mono',monospace", fontSize:'6px', color: isStart ? C.startText : C.indexText, lineHeight:'1', pointerEvents:'none' }, isStart ? 'S' : String(index)));
+
+    if (state === 'player_token')      el.appendChild(_buildToken(C.playerDot, C.playerGlow));
+    else if (state === 'ai_token')     el.appendChild(_buildToken(C.aiDot, C.aiGlow));
+    else if (state === 'cheat' && data) _paintCheat(el, data);
+    else if (isStart)                  el.appendChild(mk('span', { fontFamily:"'Bebas Neue',sans-serif", fontSize:'11px', color:C.startText, letterSpacing:'1px', marginTop:'10px' }, 'START'));
+    else if (highlighted)              el.appendChild(mk('div', { width:'10px', height:'10px', background:C.hlBorder, opacity:'0.6' }));
+  }
+
+  function _rebuild() {
+    if (!_cont) return;
+    _orient = _orientNow();
+    _cont.innerHTML = '';
+    _pEls = []; _aEls = []; _endEl = null;
+
+    const landscape = _orient === 'landscape';
+    const tileSize  = _calcTileSize(landscape);
+    const gap       = 3;
+    const endW      = Math.round(tileSize * 1.1);
+    const endH      = tileSize * 2 + 8;
+    const total     = _pathLen + 2;
+
+    const root = mk('div', { fontFamily:"'Space Mono',monospace", userSelect:'none', display:'flex', flexDirection:'column', gap:'4px', width:'100%' });
+
+    const grid = mk('div', {
+      display:'grid',
+      gridTemplateColumns:`40px 1fr 14px ${endW}px`,
+      gridTemplateRows:`${tileSize}px ${tileSize}px`,
+      gap:'6px 0', alignItems:'center', width:'100%',
+    });
+
+    // Labels
+    const pLabel = mk('div', { fontFamily:"'Space Mono',monospace", fontSize:'7px', letterSpacing:'2px', color:C.labelText, display:'flex', alignItems:'center', paddingRight:'6px', whiteSpace:'nowrap', gridColumn:'1', gridRow:'1' }, 'PLAYER');
+    const aLabel = mk('div', { fontFamily:"'Space Mono',monospace", fontSize:'7px', letterSpacing:'2px', color:C.labelText, display:'flex', alignItems:'center', paddingRight:'6px', whiteSpace:'nowrap', gridColumn:'1', gridRow:'2' }, 'AI');
+
+    // Tile rows
+    function makeRow(gRow) {
+      return mk('div', { display:'flex', gap:gap+'px', overflowX:'auto', overflowY:'hidden', height:tileSize+'px', alignItems:'center', scrollbarWidth:'thin', gridColumn:'2', gridRow:gRow });
+    }
+    const pRow = makeRow('1');
+    const aRow = makeRow('2');
+
+    for (let i = 0; i < total - 1; i++) {
+      const pt = _buildTile('player', i, tileSize);
+      _pEls[i] = pt; pRow.appendChild(pt);
+      const at = _buildTile('ai', i, tileSize);
+      _aEls[i] = at; aRow.appendChild(at);
+    }
+
+    // Connectors
+    function makeConn(gRow) {
+      const c = mk('div', { display:'flex', alignItems:'center', justifyContent:'center', height:'100%', gridColumn:'3', gridRow:gRow });
+      c.appendChild(mk('div', { width:'100%', height:'1px', background:C.connectorColor }));
+      return c;
+    }
+
+    // END tile
+    _endEl = mk('div', { width:endW+'px', height:endH+'px', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:'4px', background:C.endBg, border:`2px solid ${C.endBorder}`, boxShadow:`0 0 14px ${C.endGlow}, inset 0 0 10px ${C.endGlow}`, flexShrink:'0', position:'relative', gridColumn:'4', gridRow:'1 / 3' });
+    _pEls[total - 1] = _endEl;
+    _aEls[total - 1] = _endEl;
+
+    grid.appendChild(pLabel); grid.appendChild(pRow); grid.appendChild(makeConn('1'));
+    grid.appendChild(aLabel); grid.appendChild(aRow); grid.appendChild(makeConn('2'));
+    grid.appendChild(_endEl);
+    root.appendChild(grid);
+    _cont.appendChild(root);
+
+    for (let i = 0; i < total; i++) { _paintTile('player', i); _paintTile('ai', i); }
+  }
+
+  return {
+    mount(el) { _cont = el; },
+
+    initBoard(pathLen) {
+      _pathLen = pathLen;
+      const total = pathLen + 2;
+      _data.player = Array.from({ length: total }, (_, i) => _blank(i));
+      _data.ai     = Array.from({ length: total }, (_, i) => _blank(i));
+      _rebuild();
+      if (_resizeH) window.removeEventListener('resize', _resizeH);
+      _resizeH = () => { const o = _orientNow(); if (o !== _orient) { _orient = o; _rebuild(); } };
+      window.addEventListener('resize', _resizeH);
+    },
+
+    setTileState(path, index, state, data = null) {
+      if (!_data[path] || index < 0 || index >= _data[path].length) return;
+      _data[path][index].state = state;
+      _data[path][index].data  = data;
+      _paintTile(path, index);
+    },
+
+    clearBoard() {
+      if (!_pathLen) return;
+      const total = _pathLen + 2;
+      for (let i = 0; i < total; i++) {
+        _data.player[i] = _blank(i); _data.ai[i] = _blank(i);
+        _paintTile('player', i); _paintTile('ai', i);
+      }
+    },
+
+    highlightTile(path, index) {
+      _data[path].forEach((t, i) => { if (t.highlighted) { t.highlighted = false; _paintTile(path, i); } });
+      if (_data[path][index]) { _data[path][index].highlighted = true; _paintTile(path, index); }
+    },
+
+    clearHighlights(path) {
+      const paths = path ? [path] : ['player', 'ai'];
+      for (const p of paths) _data[p].forEach((t, i) => { if (t.highlighted) { t.highlighted = false; _paintTile(p, i); } });
+    },
+
+    getEndIndex() { return _pathLen + 1; },
+    getPathLength() { return _pathLen; },
+  };
+})();
+
+// ─── Cheat roster (for test UI dropdowns) ─────────────────────────────────────
+
+const CHEATS = [
+  { id:'kake',       name:'HELLSTEP',        japName:'駆け',     category:'good' },
+  { id:'tome',       name:'SOUL ANCHOR',     japName:'止め',     category:'good' },
+  { id:'shikomi',    name:'LOADED',          japName:'仕込み',   category:'good' },
+  { id:'kasumashi',  name:'DEAD WEIGHT',     japName:'嵩増し',   category:'good' },
+  { id:'machi',      name:'PURGATORY LOOP',  japName:'待ち',     category:'good' },
+  { id:'keppan',     name:'BLOOD PACT',      japName:'血判',     category:'good' },
+  { id:'ashidome',   name:'CURSED GROUND',   japName:'足止め',   category:'bad'  },
+  { id:'kechirashi', name:'HELLFIRE TRAP',   japName:'蹴散らし', category:'bad'  },
+  { id:'mezuri',     name:'DICE ROT',        japName:'目削り',   category:'bad'  },
+  { id:'misegane',   name:'FALSE END',       japName:'見せ金',   category:'bad'  },
+  { id:'toritate',   name:'DEBT COLLECTOR',  japName:'取り立て', category:'bad'  },
+  { id:'ashikase',   name:'LEAD BOOTS',      japName:'足枷',     category:'bad'  },
+];
+
+const PATH_LENGTHS = [8, 11, 15, 19];
+
+// ─── Shared styles ────────────────────────────────────────────────────────────
+
+const S = {
+  mono:   { fontFamily:"'Space Mono',monospace" },
+  bebas:  { fontFamily:"'Bebas Neue',sans-serif" },
+  label:  { fontFamily:"'Space Mono',monospace", fontSize:'7px', letterSpacing:'2px', color:'#2a2018' },
+  dimSep: { width:'100%', height:'1px', background:'#1c1410' },
+};
+
+function Btn({ onClick, children, color = '#c08820', disabled = false }) {
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      fontFamily:"'Space Mono',monospace", fontSize:'7px', letterSpacing:'1px',
+      padding:'6px 12px',
+      background: disabled ? '#0e0b08' : '#0e0b08',
+      color:      disabled ? '#2a2018' : color,
+      border:     `1px solid ${disabled ? '#1a1410' : color + '55'}`,
+      cursor:     disabled ? 'not-allowed' : 'pointer',
+    }}>{children}</button>
+  );
+}
+
+function NumInput({ value, onChange, min = 0, max }) {
+  return (
+    <input
+      type="number"
+      value={value}
+      min={min}
+      max={max}
+      onChange={e => onChange(Number(e.target.value))}
+      style={{
+        width:'56px', background:'#0e0b08', border:'1px solid #2a1c10',
+        color:'#c08820', fontFamily:"'Bebas Neue',sans-serif",
+        fontSize:'20px', textAlign:'center', padding:'2px 4px', outline:'none',
+      }}
+    />
+  );
+}
+
+function Select({ value, onChange, children }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)} style={{
+      background:'#0e0b08', border:'1px solid #2a1c10', color:'#ddd0b5',
+      fontFamily:"'Space Mono',monospace", fontSize:'7px', padding:'4px 6px',
+      outline:'none', cursor:'pointer',
+    }}>
+      {children}
+    </select>
+  );
+}
+
+function PathSelect({ value, onChange }) {
+  return (
+    <Select value={value} onChange={onChange}>
+      <option value="player">PLAYER</option>
+      <option value="ai">AI</option>
+    </Select>
+  );
+}
+
+function Section({ title, children }) {
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+      <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+        <div style={S.dimSep}/>
+        <span style={{ ...S.label, whiteSpace:'nowrap' }}>{title}</span>
+        <div style={S.dimSep}/>
+      </div>
+      <div style={{ display:'flex', flexWrap:'wrap', alignItems:'center', gap:'6px' }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+function App() {
+  const boardRef  = useRef(null);
+  const [pathLen, setPathLen]     = useState(8);
+  const [mounted, setMounted]     = useState(false);
+  const [log, setLog]             = useState([]);
+
+  // Token placement state
+  const [tokenPath, setTokenPath] = useState('player');
+  const [tokenIdx,  setTokenIdx]  = useState(1);
+
+  // Cheat placement state
+  const [cheatPath, setCheatPath] = useState('player');
+  const [cheatIdx,  setCheatIdx]  = useState(2);
+  const [cheatId,   setCheatId]   = useState('kake');
+
+  // Highlight state
+  const [hlPath, setHlPath] = useState('player');
+  const [hlIdx,  setHlIdx]  = useState(3);
+
+  // AI token
+  const [aiIdx, setAiIdx] = useState(1);
+
+  function addLog(msg) {
+    setLog(l => [msg, ...l].slice(0, 12));
+  }
+
+  // Mount board once DOM is ready
+  useEffect(() => {
+    if (boardRef.current && !mounted) {
+      board.mount(boardRef.current);
+      board.initBoard(pathLen);
+      setMounted(true);
+      addLog(`Board init — pathLength ${pathLen} (tiles 0..${pathLen+1})`);
+    }
+  }, [boardRef.current]);
+
+  function handleInitBoard(len) {
+    setPathLen(len);
+    board.initBoard(len);
+    addLog(`Board init — pathLength ${len}`);
+  }
+
+  function handlePlaceToken() {
+    const idx = Math.max(0, Math.min(tokenIdx, board.getPathLength() + 1));
+    board.setTileState(tokenPath, idx, 'player_token');
+    addLog(`setTileState('${tokenPath}', ${idx}, 'player_token')`);
+  }
+
+  function handlePlaceAiToken() {
+    const idx = Math.max(0, Math.min(aiIdx, board.getPathLength() + 1));
+    board.setTileState('ai', idx, 'ai_token');
+    addLog(`setTileState('ai', ${idx}, 'ai_token')`);
+  }
+
+  function handlePlaceCheat() {
+    const cheat = CHEATS.find(c => c.id === cheatId);
+    const idx   = Math.max(0, Math.min(cheatIdx, board.getPathLength() + 1));
+    board.setTileState(cheatPath, idx, 'cheat', cheat);
+    addLog(`setTileState('${cheatPath}', ${idx}, 'cheat', { japName:'${cheat.japName}', category:'${cheat.category}' })`);
+  }
+
+  function handleHighlight() {
+    const idx = Math.max(0, Math.min(hlIdx, board.getPathLength() + 1));
+    board.highlightTile(hlPath, idx);
+    addLog(`highlightTile('${hlPath}', ${idx})`);
+  }
+
+  function handleClearHighlights() {
+    board.clearHighlights();
+    addLog('clearHighlights()');
+  }
+
+  function handleClearBoard() {
+    board.clearBoard();
+    addLog('clearBoard()');
+  }
+
+  function handleSetEmpty(path, idx) {
+    board.setTileState(path, idx, 'empty');
+    addLog(`setTileState('${path}', ${idx}, 'empty')`);
+  }
+
+  const endIdx = mounted ? board.getEndIndex() : pathLen + 1;
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:'0', background:'#09070a', minHeight:'100vh' }}>
+
+      {/* ── Header ── */}
+      <div style={{ padding:'10px 16px', borderBottom:'1px solid #1c1410', display:'flex', alignItems:'baseline', gap:'12px', position:'sticky', top:0, background:'#09070a', zIndex:10 }}>
+        <span style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'24px', letterSpacing:'6px', color:'#ddd0b5' }}>BAKUTO</span>
+        <span style={{ fontFamily:"'Space Mono',monospace", fontSize:'7px', letterSpacing:'2px', color:'#2a1c10' }}>BOARD TEST</span>
+        <div style={{ flex:1 }}/>
+        <span style={{ fontFamily:"'Space Mono',monospace", fontSize:'7px', color:'#2a1c10' }}>
+          S=START · 0..{endIdx} · {endIdx}=END
+        </span>
+      </div>
+
+      {/* ── Board mount ── */}
+      <div id="board-mount" ref={boardRef} style={{ background:'#09070a', borderBottom:'1px solid #1c1410', padding:'14px 12px' }}/>
+
+      {/* ── Controls ── */}
+      <div style={{ padding:'14px 16px', display:'flex', flexDirection:'column', gap:'14px' }}>
+
+        {/* PATH LENGTH */}
+        <Section title="PATH LENGTH">
+          {PATH_LENGTHS.map(len => (
+            <button key={len} onClick={() => handleInitBoard(len)} style={{
+              fontFamily:"'Bebas Neue',sans-serif", fontSize:'20px', letterSpacing:'3px',
+              padding:'5px 16px',
+              background: len === pathLen ? '#c08820' : '#0e0b08',
+              color:      len === pathLen ? '#09070a' : '#3a2812',
+              border:     `1px solid ${len === pathLen ? '#c08820' : '#2a1c10'}`,
+              cursor:'pointer',
+            }}>{len}</button>
+          ))}
+          <span style={{ fontFamily:"'Space Mono',monospace", fontSize:'7px', color:'#2a1c10' }}>
+            Tile 0 = START · {pathLen+1} = END
+          </span>
+        </Section>
+
+        {/* PLAYER TOKEN */}
+        <Section title="PLACE PLAYER TOKEN">
+          <PathSelect value={tokenPath} onChange={setTokenPath}/>
+          <span style={S.label}>at index</span>
+          <NumInput value={tokenIdx} onChange={setTokenIdx} min={0} max={pathLen + 1}/>
+          <Btn onClick={handlePlaceToken} color="#4a8aff">place player</Btn>
+          <Btn onClick={() => handleSetEmpty(tokenPath, tokenIdx)} color="#3a2812">clear</Btn>
+        </Section>
+
+        {/* AI TOKEN */}
+        <Section title="PLACE AI TOKEN">
+          <span style={S.label}>ai at index</span>
+          <NumInput value={aiIdx} onChange={setAiIdx} min={0} max={pathLen + 1}/>
+          <Btn onClick={handlePlaceAiToken} color="#c42b24">place ai</Btn>
+          <Btn onClick={() => handleSetEmpty('ai', aiIdx)} color="#3a2812">clear</Btn>
+        </Section>
+
+        {/* CHEAT TILE */}
+        <Section title="PLACE CHEAT">
+          <PathSelect value={cheatPath} onChange={setCheatPath}/>
+          <span style={S.label}>at</span>
+          <NumInput value={cheatIdx} onChange={setCheatIdx} min={1} max={pathLen}/>
+          <Select value={cheatId} onChange={setCheatId}>
+            {CHEATS.map(c => (
+              <option key={c.id} value={c.id}>{c.category === 'good' ? '▲' : '▼'} {c.japName} {c.name}</option>
+            ))}
+          </Select>
+          <Btn onClick={handlePlaceCheat} color={CHEATS.find(c => c.id === cheatId)?.category === 'good' ? '#4a6c2a' : '#8a2a1a'}>
+            place cheat
+          </Btn>
+        </Section>
+
+        {/* HIGHLIGHT */}
+        <Section title="HIGHLIGHT (VALID PLACEMENT)">
+          <PathSelect value={hlPath} onChange={setHlPath}/>
+          <span style={S.label}>at</span>
+          <NumInput value={hlIdx} onChange={setHlIdx} min={0} max={pathLen + 1}/>
+          <Btn onClick={handleHighlight}>highlight</Btn>
+          <Btn onClick={handleClearHighlights} color="#3a2812">clear all</Btn>
+        </Section>
+
+        {/* BOARD ACTIONS */}
+        <Section title="BOARD ACTIONS">
+          <Btn onClick={handleClearBoard} color="#c42b24">clear board</Btn>
+          <Btn onClick={() => {
+            // Quick demo: populate a busy board
+            board.clearBoard();
+            board.setTileState('player', 1, 'player_token');
+            board.setTileState('ai',     2, 'ai_token');
+            const good = CHEATS.find(c => c.category === 'good');
+            const bad  = CHEATS.find(c => c.category === 'bad');
+            board.setTileState('player', 3, 'cheat', good);
+            board.setTileState('ai',     4, 'cheat', bad);
+            board.highlightTile('player', 5);
+            addLog('demo: tokens + cheats + highlight placed');
+          }} color="#c08820">demo fill</Btn>
+          <Btn onClick={() => {
+            // Walk tokens step by step: player advances by 1
+            const pl = board.getPathLength();
+            const endI = board.getEndIndex();
+            // Read current player pos from log (simplified: just use a counter)
+            addLog('use place controls to simulate movement');
+          }} color="#3a2812">— walk (manual)</Btn>
+        </Section>
+
+        {/* LOG */}
+        <div>
+          <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'6px' }}>
+            <div style={S.dimSep}/>
+            <span style={S.label}>LOG</span>
+            <div style={S.dimSep}/>
+          </div>
+          <div style={{ display:'flex', flexDirection:'column', gap:'3px', maxHeight:'140px', overflowY:'auto' }}>
+            {log.length === 0 && (
+              <span style={{ fontFamily:"'Space Mono',monospace", fontSize:'7px', color:'#1c1410' }}>no actions yet</span>
+            )}
+            {log.map((entry, i) => (
+              <div key={i} style={{ fontFamily:"'Space Mono',monospace", fontSize:'7px', color: i === 0 ? '#c08820' : '#2a2018', letterSpacing:'0.3px' }}>
+                {i === 0 ? '→ ' : '  '}{entry}
+              </div>
+            ))}
+          </div>
+        </div>
+
+      </div>{/* /controls */}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
