@@ -34,10 +34,20 @@ function calcBlind(money, level) {
   return Math.max(1, Math.floor(money * pct));
 }
 
+// Die net — inverted cross (long arm at top). Used in DiceScreen and BattleScreen prep.
+const crossMap = [
+  [1, 0, 5, false],
+  [1, 1, 1, false],
+  [0, 2, 3, false],
+  [1, 2, 0, true ],
+  [2, 2, 2, false],
+  [1, 3, 4, false],
+];
+
 // ══════════════════════════════════════════════════════════════════════════════
 // TITLE SCREEN
 // ══════════════════════════════════════════════════════════════════════════════
-const TitleScreen = ({ money, level, inventory, onEnterDungeon, onDice }) => {
+const TitleScreen = ({ money, level, inventory, onEnterDungeon, onDice, onReset }) => {
   const [pulse, setPulse] = useState(false);
   useEffect(() => { const t = setInterval(() => setPulse(p => !p), 800); return () => clearInterval(t); }, []);
 
@@ -164,6 +174,20 @@ const TitleScreen = ({ money, level, inventory, onEnterDungeon, onDice }) => {
           <span>CONFIGURE DICE</span>
           <span style={{ opacity: 0.5, fontSize: 12 }}>⚙</span>
         </button>
+
+        {onReset && (
+          <button onClick={onReset} style={{
+            width: '100%',
+            fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, letterSpacing: 4,
+            background: 'transparent', color: '#4a2018',
+            border: '1px solid #1e1410',
+            padding: '8px', cursor: 'pointer',
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          }}>
+            <span>RESET RUN</span>
+            <span style={{ opacity: 0.6, fontSize: 11 }}>↺</span>
+          </button>
+        )}
       </div>
     </div>
   );
@@ -356,7 +380,7 @@ const DiceScreen = ({ diceConfig, onSave, onBack }) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // BATTLE SCREEN
 // ══════════════════════════════════════════════════════════════════════════════
-const BattleScreen = ({ money, setMoney, level, diceConfig, inventory, onExit, onDeath }) => {
+const BattleScreen = ({ money, setMoney, level, diceConfig, inventory, onExit, onDeath, onReset }) => {
   const pathLen = Math.min(8 + Math.floor(level * 0.5), 14);
   const blindAmt = calcBlind(money, level);
   const maxCheats = Math.floor(pathLen / 2);
@@ -487,7 +511,7 @@ const BattleScreen = ({ money, setMoney, level, diceConfig, inventory, onExit, o
 
   function continueRound() {
     if (currentMoney < blindAmt) { setPhase('bankrupt'); return; }
-    if (aiMoney < blindAmt) { setMoney(currentMoney); onExit('win'); return; }
+    if (aiMoney < blindAmt) { onExit('win', currentMoney); return; }
     const np = blindAmt * 2;
     setCurrentMoney(m => m - blindAmt);
     setAiMoney(m => m - blindAmt);
@@ -499,7 +523,7 @@ const BattleScreen = ({ money, setMoney, level, diceConfig, inventory, onExit, o
     setPhase('player_turn');
   }
 
-  function quitDungeon() { setMoney(currentMoney); onExit('quit'); }
+  function quitDungeon() { onExit('quit', currentMoney); }
 
   function toggleCheat(id) {
     setSelectedCheats(prev => {
@@ -599,6 +623,11 @@ const BattleScreen = ({ money, setMoney, level, diceConfig, inventory, onExit, o
             background: '#1a1610', color: '#907868', border: '1px solid #2a1e16',
             padding: '5px 8px', cursor: 'pointer',
           }}>PREP</button>}
+          {onReset && <button onClick={onReset} style={{
+            fontFamily: "'Press Start 2P', monospace", fontSize: 6, letterSpacing: 1,
+            background: 'transparent', color: '#4a2018', border: '1px solid #1e1410',
+            padding: '5px 8px', cursor: 'pointer',
+          }}>RESET</button>}
           <button onClick={() => setShowQuit(true)} style={{
             fontFamily: "'Press Start 2P', monospace", fontSize: 6, letterSpacing: 1,
             background: 'transparent', color: '#3a3028', border: '1px solid #1e1610',
@@ -1001,50 +1030,68 @@ const BattleScreen = ({ money, setMoney, level, diceConfig, inventory, onExit, o
 
               {/* ─── DICE TAB ─── */}
               {prepTab === 'dice' && (
-                <div>
-                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16 }}>
-                    <DiceCube3D faces={localDice} resultFace={0} size={72}/>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 6 }}>
-                        <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 36, color: barColor, lineHeight: 1, textShadow: `0 0 10px ${barColor}66` }}>{diceSum}</span>
-                        <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 14, color: '#3a3028' }}>/ 21</span>
-                      </div>
-                      <div style={{ height: 5, background: '#1a1610' }}>
-                        <div style={{ height: '100%', width: `${(diceSum/21)*100}%`, background: barColor, transition: 'all 0.2s', boxShadow: `0 0 5px ${barColor}88` }}/>
-                      </div>
-                      <div style={{ marginTop: 4 }}>
-                        <PxLabel size={6} color={remaining === 0 ? '#c42b24' : '#3a3028'}>
-                          {remaining > 0 ? `${remaining} PTS LEFT` : 'CAP REACHED'}
-                        </PxLabel>
-                      </div>
+                <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', justifyContent: 'center' }}>
+
+                  {/* Inverted cross net */}
+                  <div style={{ position: 'relative', flexShrink: 0 }}>
+                    <div style={{
+                      position: 'absolute', left: 72 + 6, top: 0,
+                      width: 72, height: 72 * 4 + 6 * 3,
+                      background: 'rgba(196,43,36,0.04)', pointerEvents: 'none',
+                    }}/>
+                    <div style={{
+                      position: 'absolute', left: 0, top: 72 + 6,
+                      width: 72 * 3 + 6 * 2, height: 72,
+                      background: 'rgba(196,43,36,0.04)', pointerEvents: 'none',
+                    }}/>
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(3, 72px)',
+                      gridTemplateRows: 'repeat(4, 72px)',
+                      gap: 6,
+                    }}>
+                      {Array.from({ length: 12 }).map((_, cellIdx) => {
+                        const col = cellIdx % 3;
+                        const row = Math.floor(cellIdx / 3);
+                        const match = crossMap.find(([c, r]) => c === col && r === row);
+                        if (!match) return <div key={cellIdx} style={{ width: 72, height: 72 }}/>;
+                        const [, , faceIdx, isCenter] = match;
+                        return (
+                          <DiceFaceCell
+                            key={cellIdx}
+                            value={localDice[faceIdx]}
+                            faceIdx={faceIdx}
+                            isCenter={isCenter}
+                            remaining={remaining}
+                            onChange={v => updateFace(faceIdx, v)}
+                          />
+                        );
+                      })}
                     </div>
                   </div>
 
-                  {/* 2×3 face grid */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                    {localDice.map((v, i) => (
-                      <div key={i} style={{
-                        background: '#110e08', border: '1px solid #2a1e16', padding: '10px 12px',
-                      }}>
-                        <PxLabel size={6} color="#3a2e20" style={{ display: 'block', marginBottom: 6 }}>FACE {i+1}</PxLabel>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <button onClick={() => adjustFace(i, -1)} style={{
-                            width: 28, height: 28, background: '#1a1610', border: '1px solid #3a2a1e',
-                            color: '#907868', fontFamily: "'Bebas Neue', sans-serif", fontSize: 18,
-                            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          }}>−</button>
-                          <span style={{ flex: 1, textAlign: 'center', fontFamily: "'Bebas Neue', sans-serif", fontSize: 32, color: '#ddd0b5', lineHeight: 1 }}>{v}</span>
-                          <button onClick={() => adjustFace(i, 1)} style={{
-                            width: 28, height: 28, background: '#1a1610', border: `1px solid ${remaining > 0 ? '#3a2a1e' : '#1e1810'}`,
-                            color: remaining > 0 ? '#907868' : '#2a2018', fontFamily: "'Bebas Neue', sans-serif", fontSize: 18,
-                            cursor: remaining > 0 ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          }}>+</button>
-                        </div>
+                  {/* Right column: 3D die + sum bar */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, paddingTop: 8 }}>
+                    <DiceCube3D faces={localDice} resultFace={0} size={82}/>
+
+                    <div style={{ background: '#0e0b08', border: '1px solid #1e1610', padding: '10px 12px', width: '100%' }}>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, marginBottom: 5 }}>
+                        <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 32, color: barColor, lineHeight: 1, textShadow: `0 0 10px ${barColor}66` }}>{diceSum}</span>
+                        <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, color: '#3a3028' }}>/ 21</span>
                       </div>
-                    ))}
-                  </div>
-                  <div style={{ marginTop: 10, padding: '8px 10px', border: '1px solid #1e1610' }}>
-                    <PxLabel size={6} color="#2a2018" style={{ lineHeight: 2 }}>FACE 0 = SKIP TURN · HIGH VALUES RISKY NEAR END</PxLabel>
+                      <div style={{ height: 4, background: '#181410', marginBottom: 5 }}>
+                        <div style={{ height: '100%', width: `${Math.min(100,(diceSum/21)*100)}%`, background: barColor, transition: 'all 0.2s', boxShadow: `0 0 5px ${barColor}88` }}/>
+                      </div>
+                      <PxLabel size={5} color={remaining === 0 ? '#c42b24' : '#3a3028'}>
+                        {remaining > 0 ? `${remaining} PTS LEFT` : 'CAP REACHED'}
+                      </PxLabel>
+                    </div>
+
+                    <div style={{ padding: '7px 9px', border: '1px solid #1e1610', width: '100%' }}>
+                      <PxLabel size={5} color="#2a2018" style={{ lineHeight: 2.2 }}>
+                        0 = SKIP TURN{'\n'}HIGH RISKY NEAR END
+                      </PxLabel>
+                    </div>
                   </div>
                 </div>
               )}
@@ -1107,4 +1154,171 @@ const BattleScreen = ({ money, setMoney, level, diceConfig, inventory, onExit, o
   );
 };
 
-Object.assign(window, { TitleScreen, DiceScreen, BattleScreen, CHEATS_DATA });
+// ══════════════════════════════════════════════════════════════════════════════
+// BACK ROOM SCREEN
+// ══════════════════════════════════════════════════════════════════════════════
+const BackRoomScreen = ({ money, level, inventory, onLeave, onReset }) => {
+  const blind = calcBlind(money, level + 1);
+  const PRICE_MULT = { low: 1, medium: 1.5, high: 2 };
+
+  const [shopItems] = useState(() => {
+    const all = Object.values(CHEATS_DATA);
+    const shuffled = [...all].sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, 4).map(c => ({
+      ...c,
+      price: Math.max(1, Math.floor(blind * PRICE_MULT[c.tier])),
+    }));
+  });
+
+  const [currentMoney, setCurrentMoney] = useState(money);
+  const [bought, setBought] = useState([]);
+
+  function buy(item) {
+    if (bought.includes(item.id) || currentMoney < item.price) return;
+    setBought(prev => [...prev, item.id]);
+    setCurrentMoney(m => m - item.price);
+  }
+
+  function leave() {
+    onLeave(currentMoney, [...inventory, ...bought]);
+  }
+
+  return (
+    <div style={{
+      width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+      background: '#080604', overflow: 'hidden', position: 'relative',
+    }}>
+      {/* Glow */}
+      <div style={{
+        position: 'absolute', inset: 0, pointerEvents: 'none',
+        background: 'radial-gradient(ellipse at 50% 95%, rgba(100,10,5,0.22) 0%, transparent 62%)',
+      }}/>
+
+      {/* Header */}
+      <div style={{
+        padding: '12px 16px', borderBottom: '1px solid #1e1610', flexShrink: 0,
+        display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
+      }}>
+        <div>
+          <h1 style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 28, letterSpacing: 5, color: '#ddd0b5', lineHeight: 1, margin: 0 }}>
+            THE BACK ROOM
+          </h1>
+          <PxLabel size={6} color="#3a2e20" style={{ display: 'block', marginTop: 3 }}>
+            CLOCK STILL RUNNING · BROWSE FAST
+          </PxLabel>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 24, color: '#c08820', lineHeight: 1 }}>
+            ¥{currentMoney.toLocaleString()}
+          </div>
+          <PxLabel size={5} color="#3a2e20">FUNDS</PxLabel>
+        </div>
+      </div>
+
+      {/* Price guide */}
+      <div style={{
+        padding: '6px 16px', borderBottom: '1px solid #1a1410', flexShrink: 0,
+        display: 'flex', gap: 16, alignItems: 'center',
+      }}>
+        <PxLabel size={6} color="#2a2018">FOR HIRE</PxLabel>
+        {[
+          { label: 'LOW', mult: 1 }, { label: 'MED', mult: 1.5 }, { label: 'HIGH', mult: 2 },
+        ].map(({ label, mult }) => (
+          <PxLabel key={label} size={5} color="#1e1810">
+            {label}=¥{Math.max(1, Math.floor(blind * mult)).toLocaleString()}
+          </PxLabel>
+        ))}
+      </div>
+
+      {/* Cheat list */}
+      <div style={{ flex: 1, overflow: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {shopItems.map(item => {
+          const alreadyOwned = inventory.includes(item.id);
+          const justBought = bought.includes(item.id);
+          const canAfford = !alreadyOwned && !justBought && currentMoney >= item.price;
+          const isGood = item.type === 'good';
+          const accent = isGood ? '#c08820' : '#c42b24';
+          const dimFrame = isGood ? '#4a3010' : '#4a1010';
+          const frameColor = justBought ? '#4a6c2a' : alreadyOwned ? '#2a2018' : dimFrame;
+          const accentOrDim = justBought ? '#4a6c2a' : alreadyOwned ? '#3a3028' : accent;
+
+          return (
+            <div key={item.id} style={{
+              padding: '12px 14px',
+              background: justBought ? '#0a1006' : '#0e0b08',
+              border: `2px solid ${frameColor}`,
+              borderLeft: `5px solid ${accentOrDim}`,
+              opacity: alreadyOwned ? 0.5 : 1,
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
+              transition: 'all 0.12s',
+            }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                  <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 18, letterSpacing: 1, color: accentOrDim, lineHeight: 1 }}>
+                    {item.name}
+                  </span>
+                  <div style={{
+                    width: 6, height: 6,
+                    background: item.tier === 'high' ? '#c42b24' : item.tier === 'medium' ? '#c08820' : '#4e8a4e',
+                  }}/>
+                  <PxLabel size={5} color={isGood ? '#4a3010' : '#4a1010'}>{isGood ? '▲ BUFF' : '▼ TRAP'}</PxLabel>
+                </div>
+                <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 8, color: '#3a3028', lineHeight: 1.5 }}>
+                  {item.desc}
+                </div>
+              </div>
+              <div style={{ flexShrink: 0 }}>
+                {justBought ? (
+                  <PxLabel size={7} color="#4a6c2a">HIRED</PxLabel>
+                ) : alreadyOwned ? (
+                  <PxLabel size={6} color="#2a2018">OWNED</PxLabel>
+                ) : (
+                  <button onClick={() => buy(item)} disabled={!canAfford} style={{
+                    fontFamily: "'Bebas Neue', sans-serif", fontSize: 14, letterSpacing: 2,
+                    padding: '8px 14px',
+                    background: canAfford ? accent : '#1a1410',
+                    color: canAfford ? (isGood ? '#0a0806' : '#e8d8b0') : '#2a2018',
+                    border: `1px solid ${canAfford ? accent : '#2a1e16'}`,
+                    cursor: canAfford ? 'pointer' : 'not-allowed',
+                    boxShadow: canAfford ? `0 0 10px ${accent}44` : 'none',
+                    transition: 'all 0.12s',
+                  }}>
+                    TAKE ON  ¥{item.price.toLocaleString()}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Footer */}
+      <div style={{
+        padding: '12px 16px', borderTop: '1px solid #1e1610', flexShrink: 0,
+        display: 'flex', gap: 8,
+      }}>
+        {onReset && (
+          <button onClick={onReset} style={{
+            fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, letterSpacing: 2,
+            background: 'transparent', color: '#4a2018',
+            border: '1px solid #1e1410', padding: '10px 14px', cursor: 'pointer',
+          }}>RESET</button>
+        )}
+        <button onClick={leave} style={{
+          flex: 1,
+          fontFamily: "'Bebas Neue', sans-serif", fontSize: 20, letterSpacing: 5,
+          background: 'transparent', color: '#907868',
+          border: '2px solid #3a2e20',
+          padding: '13px', cursor: 'pointer',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          transition: 'all 0.12s',
+        }}>
+          <span>BACK OUT</span>
+          <span style={{ fontSize: 14, opacity: 0.6 }}>→ FIGHT</span>
+        </button>
+      </div>
+    </div>
+  );
+};
+
+Object.assign(window, { TitleScreen, DiceScreen, BattleScreen, BackRoomScreen, CHEATS_DATA });

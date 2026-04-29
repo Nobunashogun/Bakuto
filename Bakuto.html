@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>BAKUTO — SET YOUR FACES</title>
-  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <title>BAKUTO</title>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Press+Start+2P&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     html, body {
       width: 100%; height: 100%;
-      background: #09070a;
+      background: #080604;
       color: #ddd0b5;
       font-family: 'Space Mono', monospace;
       -webkit-font-smoothing: antialiased;
@@ -46,16 +46,11 @@
       100% { transform: scale(1);   opacity: 1; }
     }
 
-    @keyframes flashSave {
-      0%, 100% { opacity: 1; }
-      50%       { opacity: 0.6; }
-    }
-
     button { -webkit-tap-highlight-color: transparent; }
     button:active { opacity: 0.75; }
 
     ::-webkit-scrollbar { width: 3px; height: 3px; }
-    ::-webkit-scrollbar-track { background: #09070a; }
+    ::-webkit-scrollbar-track { background: #080604; }
     ::-webkit-scrollbar-thumb { background: #2a1e16; }
   </style>
 </head>
@@ -66,556 +61,133 @@
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 
+<!-- Load shared components first, then screens -->
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="screens.jsx"></script>
+
 <script type="text/babel">
-const { useState, useRef, useEffect, useCallback } = React;
+const { useState, useRef } = React;
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-const SUM_CAP  = 21;
-const MAX_ZERO = 3;
-const SAVE_KEY = 'bakuto_dice_v4';
+// ── Persistent game state ──────────────────────────────────────────────────────
 
-// Each face index → CSS transform that brings it to the front
-const FACE_SHOW = [
-  'rotateX(-22deg) rotateY(0deg)',    // 0 — front
-  'rotateX(-22deg) rotateY(180deg)', // 1 — back
-  'rotateX(-22deg) rotateY(-90deg)', // 2 — right
-  'rotateX(-22deg) rotateY(90deg)',  // 3 — left
-  'rotateX(-112deg) rotateY(0deg)',  // 4 — top
-  'rotateX(68deg)  rotateY(0deg)',   // 5 — bottom
-];
+const SAVE_KEY = 'bakuto_state_v1';
 
-// Inverted cross (long arm UP — Peter's cross / "upside-down" die net)
-//   col 0  col 1  col 2
-// row 0  ·   [5]   ·       ← long arm tip  (back face)
-// row 1  ·   [1]   ·       ← long arm mid  (top face)
-// row 2 [3]  [0]  [2]      ← horizontal bar (left · FRONT · right)
-// row 3  ·   [4]   ·       ← foot           (bottom face)
-const NET = [
-  { col:1, row:0, fi:5, label:'BACK'   },
-  { col:1, row:1, fi:1, label:'TOP'    },
-  { col:0, row:2, fi:3, label:'LEFT'   },
-  { col:1, row:2, fi:0, label:'FRONT', center:true },
-  { col:2, row:2, fi:2, label:'RIGHT'  },
-  { col:1, row:3, fi:4, label:'BOTTOM' },
-];
+const DEFAULT_STATE = {
+  money: 10000,
+  level: 0,           // completed fights; 0 = haven't fought yet
+  inventory: [],
+  diceConfig: [4, 4, 4, 3, 3, 3],
+};
 
-function loadFaces() {
+function loadState() {
   try {
-    const s = JSON.parse(localStorage.getItem(SAVE_KEY));
-    if (Array.isArray(s) && s.length === 6 && s.every(n => Number.isFinite(n) && n >= 0)) return s;
+    const raw = JSON.parse(localStorage.getItem(SAVE_KEY));
+    if (raw && typeof raw.money === 'number') return { ...DEFAULT_STATE, ...raw };
   } catch (e) {}
-  return [4, 4, 4, 3, 3, 3]; // sum = 21
+  return { ...DEFAULT_STATE };
 }
 
-// ─── DiceCube3D ───────────────────────────────────────────────────────────────
-function DiceCube3D({ faces, rolling, transform, size }) {
-  const h = size / 2;
-  const POSITIONS = [
-    `translateZ(${h}px)`,
-    `rotateY(180deg) translateZ(${h}px)`,
-    `rotateY(90deg)  translateZ(${h}px)`,
-    `rotateY(-90deg) translateZ(${h}px)`,
-    `rotateX(90deg)  translateZ(${h}px)`,
-    `rotateX(-90deg) translateZ(${h}px)`,
-  ];
+// ── App ────────────────────────────────────────────────────────────────────────
 
-  return (
-    <div style={{ perspective: 640, width: size, height: size, flexShrink: 0 }}>
-      <div style={{
-        width: size, height: size,
-        position: 'relative',
-        transformStyle: 'preserve-3d',
-        transform:  rolling ? undefined : transform,
-        transition: rolling ? 'none' : 'transform 0.38s cubic-bezier(0.25,0.46,0.45,0.94)',
-        animation:  rolling
-          ? 'diceRoll 0.92s cubic-bezier(0.12,0,0.28,1) forwards'
-          : 'none',
-      }}>
-        {POSITIONS.map((pos, i) => (
-          <div key={i} style={{
-            position: 'absolute',
-            width: size, height: size,
-            background: 'linear-gradient(148deg, #201508 0%, #0e0a06 100%)',
-            border: '2px solid #3d2c14',
-            boxShadow: 'inset 0 0 12px rgba(0,0,0,0.75), inset 0 1px 0 rgba(255,220,150,0.03)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            backfaceVisibility: 'hidden',
-            transform: pos,
-          }}>
-            {/* Corner marks */}
-            {[[1,1],[1,-1],[-1,1],[-1,-1]].map(([sx,sy], ci) => (
-              <div key={ci} style={{
-                position: 'absolute',
-                top:    sy > 0 ? 6 : undefined,
-                bottom: sy < 0 ? 6 : undefined,
-                left:   sx > 0 ? 6 : undefined,
-                right:  sx < 0 ? 6 : undefined,
-                width: 7, height: 7,
-                borderTop:    sy > 0 ? '1px solid #3d2c14' : undefined,
-                borderBottom: sy < 0 ? '1px solid #3d2c14' : undefined,
-                borderLeft:   sx > 0 ? '1px solid #3d2c14' : undefined,
-                borderRight:  sx < 0 ? '1px solid #3d2c14' : undefined,
-              }}/>
-            ))}
-            <span style={{
-              fontFamily: "'Bebas Neue', sans-serif",
-              fontSize: Math.round(size * 0.43),
-              color: faces[i] === 0 ? '#2e2014' : '#e2d2b2',
-              lineHeight: 1,
-              textShadow: faces[i] !== 0 ? '0 2px 10px rgba(0,0,0,0.9)' : 'none',
-              userSelect: 'none',
-            }}>
-              {faces[i]}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ─── NetCell ──────────────────────────────────────────────────────────────────
-function NetCell({ fi, label, isCenter, value, remaining, zeroOverflow, onChange, onHover, onHoverEnd }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft]     = useState('');
-  const inputRef = useRef(null);
-
-  useEffect(() => { if (editing && inputRef.current) inputRef.current.select(); }, [editing]);
-
-  function commit(raw) {
-    setEditing(false);
-    const v = Math.max(0, parseInt(raw) || 0);
-    onChange(fi, v);
-  }
-
-  function nudge(delta) {
-    const next = Math.max(0, value + delta);
-    if (delta > 0 && remaining <= 0) return;
-    if (delta > 0 && remaining - delta < 0) return;
-    onChange(fi, next);
-  }
-
-  const isZero   = value === 0;
-  const warnZero = isZero && zeroOverflow;
-  const accentColor = isCenter ? '#c08820' : '#3a2812';
-  const bg = isCenter ? '#1c1200' : '#120e08';
-
-  return (
-    <div
-      onMouseEnter={() => onHover(fi)}
-      onMouseLeave={onHoverEnd}
-      style={{
-        width: 76, height: 76,
-        background: bg,
-        border: `2px solid ${warnZero ? '#c42b24' : accentColor}`,
-        display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center',
-        position: 'relative',
-        userSelect: 'none',
-        transition: 'border-color 0.15s',
-      }}
-    >
-      {/* Face tag */}
-      <span style={{
-        position: 'absolute', top: 3, left: 5,
-        fontFamily: "'Space Mono', monospace",
-        fontSize: 6.5,
-        color: isCenter ? '#7a5a1a' : '#241a10',
-        letterSpacing: 0,
-      }}>F{fi + 1}</span>
-
-      {/* Zero-count warning pip */}
-      {warnZero && (
-        <div style={{
-          position: 'absolute', top: 4, right: 5,
-          width: 5, height: 5,
-          background: '#c42b24',
-        }}/>
-      )}
-
-      {/* Value */}
-      {editing ? (
-        <input
-          ref={inputRef}
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onBlur={() => commit(draft)}
-          onKeyDown={e => {
-            if (e.key === 'Enter')  commit(draft);
-            if (e.key === 'Escape') { setEditing(false); setDraft(''); }
-          }}
-          style={{
-            width: 46, background: 'transparent',
-            border: 'none', borderBottom: '2px solid #c08820',
-            fontFamily: "'Bebas Neue', sans-serif",
-            fontSize: 34, color: '#c08820',
-            textAlign: 'center', outline: 'none', padding: 0,
-          }}
-        />
-      ) : (
-        <div
-          onClick={() => { setDraft(String(value)); setEditing(true); }}
-          style={{
-            fontFamily: "'Bebas Neue', sans-serif",
-            fontSize: 40, lineHeight: 1,
-            color: isZero
-              ? '#281a0c'
-              : isCenter
-              ? '#c08820'
-              : '#ddd0b5',
-            cursor: 'text',
-            transition: 'color 0.15s',
-          }}
-        >
-          {value}
-        </div>
-      )}
-
-      {/* ± controls */}
-      <div style={{ display: 'flex', gap: 4, marginTop: 3 }}>
-        {[[-1,'−'],[1,'+']].map(([delta, glyph]) => {
-          const disabled = delta > 0 && remaining <= 0;
-          return (
-            <button
-              key={glyph}
-              onClick={() => nudge(delta)}
-              style={{
-                width: 22, height: 17,
-                background: '#160e06',
-                border: `1px solid ${disabled ? '#1a1410' : '#3a2a1e'}`,
-                color: disabled ? '#221810' : '#706050',
-                fontFamily: "'Bebas Neue', sans-serif", fontSize: 17,
-                cursor: disabled ? 'not-allowed' : 'pointer',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
-              }}
-            >{glyph}</button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ─── App ──────────────────────────────────────────────────────────────────────
 function App() {
-  const [faces,       setFaces]       = useState(loadFaces);
-  const [rolling,     setRolling]     = useState(false);
-  const [resultFi,    setResultFi]    = useState(0);
-  const [rolledVal,   setRolledVal]   = useState(null);
-  const [showResult,  setShowResult]  = useState(false);
-  const [hoverFi,     setHoverFi]     = useState(-1);
-  const [locked,      setLocked]      = useState(false);
+  const [screen, setScreen] = useState('title');
+  const [state, setState] = useState(loadState);
 
-  const sum       = faces.reduce((a, b) => a + b, 0);
-  const remaining = SUM_CAP - sum;
-  const overCap   = sum > SUM_CAP;
-  const zeroCount = faces.filter(v => v === 0).length;
-  const tooZeros  = zeroCount > MAX_ZERO;
-  const valid     = !overCap && !tooZeros;
-
-  const barPct   = Math.min(100, (sum / SUM_CAP) * 100);
-  const barColor = overCap   ? '#c42b24'
-                 : sum >= 19 ? '#c08820'
-                 : sum >= 14 ? '#a06010'
-                             : '#4e8a4e';
-
-  // Which face the 3D die shows
-  const diceTransform = hoverFi >= 0 ? FACE_SHOW[hoverFi] : FACE_SHOW[resultFi];
-
-  function changeFace(fi, val) {
-    const diff = val - faces[fi];
-    if (diff > 0 && remaining - diff < 0) return;
-    const f = [...faces]; f[fi] = val; setFaces(f);
-    setLocked(false);
+  // Persist + update state in one call
+  function save(patch) {
+    setState(prev => {
+      const next = { ...prev, ...patch };
+      localStorage.setItem(SAVE_KEY, JSON.stringify(next));
+      return next;
+    });
   }
 
-  function roll() {
-    if (rolling) return;
-    setRolling(true);
-    setShowResult(false);
-    const fi = Math.floor(Math.random() * 6);
-    setTimeout(() => {
-      setResultFi(fi);
-      setRolledVal(faces[fi]);
-      setRolling(false);
-      setShowResult(true);
-    }, 960);
+  function reset() {
+    localStorage.removeItem(SAVE_KEY);
+    setState({ ...DEFAULT_STATE });
+    setScreen('title');
   }
 
-  function lockIn() {
-    if (!valid) return;
-    localStorage.setItem(SAVE_KEY, JSON.stringify(faces));
-    setLocked(true);
+  // ── Navigation ──────────────────────────────────────────────────────────────
+
+  function enterDungeon() {
+    const nextLevel = state.level + 1;
+    // Back Room appears before every 7th, 14th, 21st... fight
+    if (nextLevel % 7 === 0) {
+      setScreen('backroom');
+    } else {
+      setScreen('battle');
+    }
   }
 
-  // ── render ──
-  return (
-    <div style={{
-      width: '100%', height: '100%',
-      display: 'flex', flexDirection: 'column',
-      background: '#09070a',
-      overflow: 'hidden',
-      position: 'relative',
-    }}>
-      {/* Background ember glow */}
-      <div style={{
-        position: 'absolute', inset: 0, pointerEvents: 'none',
-        background: 'radial-gradient(ellipse at 50% 90%, rgba(120,14,6,0.18) 0%, transparent 58%)',
-      }}/>
+  function handleBattleExit(result, finalMoney) {
+    const nextLevel = result === 'win' ? state.level + 1 : state.level;
+    save({ money: finalMoney !== undefined ? finalMoney : state.money, level: nextLevel });
+    setScreen('title');
+  }
 
-      {/* ── HEADER ─────────────────────────────────────────────────────── */}
-      <div style={{
-        flexShrink: 0,
-        padding: '10px 20px',
-        borderBottom: '1px solid #1c1410',
-        display: 'flex', alignItems: 'baseline', gap: 14,
-        position: 'relative',
-      }}>
-        <span style={{
-          fontFamily: "'Bebas Neue', sans-serif",
-          fontSize: 28, letterSpacing: 7, color: '#ddd0b5', lineHeight: 1,
-        }}>BAKUTO</span>
-        <span style={{
-          fontFamily: "'Space Mono', monospace",
-          fontSize: 7, letterSpacing: 2, color: '#2a1c10',
-        }}>SET YOUR FACES</span>
-        <div style={{ flex: 1 }}/>
-        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#2a1c10' }}>
-          SUM ≤ 21 · MAX {MAX_ZERO} ZEROS
-        </span>
-      </div>
+  function handleDeath() {
+    reset();
+  }
 
-      {/* ── CONTENT (scrollable) ────────────────────────────────────────── */}
-      <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
-        <div style={{
-          display: 'flex', flexDirection: 'column',
-          alignItems: 'center', gap: 16,
-          padding: '20px 20px 32px',
-        }}>
+  function handleBackRoomLeave(money, inventory) {
+    save({ money, inventory });
+    setScreen('battle');
+  }
 
-          {/* ── DICE HERO ──────────────────────────────────────────────── */}
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}>
+  // ── Screens ─────────────────────────────────────────────────────────────────
 
-            <span style={{
-              fontFamily: "'Space Mono', monospace",
-              fontSize: 7, letterSpacing: 3, color: '#1e1610',
-              marginBottom: 12,
-            }}>
-              {rolling ? 'ROLLING...' : 'TAP TO ROLL'}
-            </span>
+  if (screen === 'title') {
+    return (
+      <window.TitleScreen
+        money={state.money}
+        level={state.level}
+        inventory={state.inventory}
+        onEnterDungeon={enterDungeon}
+        onDice={() => setScreen('dice')}
+        onReset={reset}
+      />
+    );
+  }
 
-            {/* Die click zone */}
-            <div
-              onClick={roll}
-              style={{ cursor: rolling ? 'default' : 'pointer', position: 'relative', padding: 20 }}
-            >
-              {/* Halo */}
-              <div style={{
-                position: 'absolute', inset: 0, pointerEvents: 'none',
-                background: 'radial-gradient(ellipse at center, rgba(192,136,32,0.08) 0%, transparent 68%)',
-              }}/>
-              <DiceCube3D
-                faces={faces}
-                rolling={rolling}
-                transform={diceTransform}
-                size={124}
-              />
-            </div>
+  if (screen === 'dice') {
+    return (
+      <window.DiceScreen
+        diceConfig={state.diceConfig}
+        onSave={faces => { save({ diceConfig: faces }); setScreen('title'); }}
+        onBack={() => setScreen('title')}
+      />
+    );
+  }
 
-            {/* Result readout */}
-            <div style={{
-              height: 56,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
-              {showResult && !rolling ? (
-                <div style={{ textAlign: 'center', animation: 'popIn 0.26s ease-out' }}>
-                  <div style={{
-                    fontFamily: "'Bebas Neue', sans-serif",
-                    fontSize: 58, lineHeight: 1, letterSpacing: 2,
-                    color: rolledVal === 0 ? '#c42b24' : '#c08820',
-                    textShadow: rolledVal === 0
-                      ? '0 0 24px rgba(196,43,36,0.65)'
-                      : '0 0 24px rgba(192,136,32,0.65)',
-                  }}>
-                    {rolledVal}
-                  </div>
-                  {rolledVal === 0 && (
-                    <div style={{
-                      fontFamily: "'Space Mono', monospace",
-                      fontSize: 7, letterSpacing: 3, color: '#c42b24', marginTop: 2,
-                    }}>TURN LOST</div>
-                  )}
-                </div>
-              ) : null}
-            </div>
-          </div>
+  if (screen === 'backroom') {
+    return (
+      <window.BackRoomScreen
+        money={state.money}
+        level={state.level}
+        inventory={state.inventory}
+        onLeave={handleBackRoomLeave}
+        onReset={reset}
+      />
+    );
+  }
 
-          {/* ── DIVIDER ────────────────────────────────────────────────── */}
-          <div style={{
-            width: '100%', maxWidth: 350,
-            display: 'flex', alignItems: 'center', gap: 10,
-          }}>
-            <div style={{ flex: 1, height: 1, background: '#1c1410' }}/>
-            <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#251a10', letterSpacing: 2 }}>CONFIGURE</span>
-            <div style={{ flex: 1, height: 1, background: '#1c1410' }}/>
-          </div>
+  if (screen === 'battle') {
+    return (
+      <window.BattleScreen
+        money={state.money}
+        setMoney={() => {}}
+        level={state.level + 1}
+        diceConfig={state.diceConfig}
+        inventory={state.inventory}
+        onExit={handleBattleExit}
+        onDeath={handleDeath}
+        onReset={reset}
+      />
+    );
+  }
 
-          {/* ── INVERTED CROSS NET ─────────────────────────────────────── */}
-          <div style={{ position: 'relative' }}>
-            {/* Subtle cross-shaped bg tint */}
-            <div style={{
-              position: 'absolute',
-              left: 76 + 6, top: 0,
-              width: 76, height: 76 * 4 + 6 * 3,
-              background: 'rgba(192,136,32,0.022)', pointerEvents: 'none',
-            }}/>
-            <div style={{
-              position: 'absolute',
-              left: 0, top: (76 + 6) * 2,
-              width: 76 * 3 + 6 * 2, height: 76,
-              background: 'rgba(192,136,32,0.022)', pointerEvents: 'none',
-            }}/>
-
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(3, 76px)',
-              gridTemplateRows: 'repeat(4, 76px)',
-              gap: 6,
-            }}>
-              {Array.from({ length: 12 }).map((_, idx) => {
-                const col  = idx % 3;
-                const row  = Math.floor(idx / 3);
-                const cell = NET.find(c => c.col === col && c.row === row);
-                if (!cell) return <div key={idx} style={{ width: 76, height: 76 }}/>;
-                return (
-                  <NetCell
-                    key={idx}
-                    fi={cell.fi}
-                    label={cell.label}
-                    isCenter={!!cell.center}
-                    value={faces[cell.fi]}
-                    remaining={remaining}
-                    zeroOverflow={tooZeros}
-                    onChange={changeFace}
-                    onHover={fi => setHoverFi(fi)}
-                    onHoverEnd={() => setHoverFi(-1)}
-                  />
-                );
-              })}
-            </div>
-          </div>
-
-          {/* ── SUM BAR ────────────────────────────────────────────────── */}
-          <div style={{
-            width: '100%', maxWidth: 350,
-            background: '#0e0b08', border: '1px solid #1c1410',
-            padding: '10px 14px',
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-              <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#2a2018', letterSpacing: 1 }}>
-                FACE SUM
-              </span>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-                <span style={{
-                  fontFamily: "'Bebas Neue', sans-serif",
-                  fontSize: 36, lineHeight: 1,
-                  color: barColor,
-                  textShadow: `0 0 12px ${barColor}55`,
-                  transition: 'color 0.2s',
-                }}>{sum}</span>
-                <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 15, color: '#2a2018' }}>/ {SUM_CAP}</span>
-              </div>
-            </div>
-
-            {/* Bar track */}
-            <div style={{ height: 4, background: '#181410', position: 'relative', marginBottom: 8 }}>
-              <div style={{
-                position: 'absolute', top: 0, left: 0, bottom: 0,
-                width: `${barPct}%`,
-                background: barColor,
-                boxShadow: `0 0 6px ${barColor}88`,
-                transition: 'width 0.15s, background 0.2s',
-              }}/>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{
-                fontFamily: "'Space Mono', monospace", fontSize: 7,
-                color: overCap ? '#c42b24' : remaining === 0 ? '#c08820' : '#2a2018',
-              }}>
-                {overCap
-                  ? '▲ OVER CAP'
-                  : remaining > 0
-                  ? `${remaining} REMAINING`
-                  : 'CAP REACHED'}
-              </span>
-              <span style={{
-                fontFamily: "'Space Mono', monospace", fontSize: 7,
-                color: tooZeros ? '#c42b24' : zeroCount > 0 ? '#504540' : '#2a2018',
-              }}>
-                {zeroCount}/{MAX_ZERO} ZEROS{tooZeros ? ' ▲' : ''}
-              </span>
-            </div>
-          </div>
-
-          {/* ── WARNINGS ───────────────────────────────────────────────── */}
-          {(overCap || tooZeros) && (
-            <div style={{
-              width: '100%', maxWidth: 350,
-              padding: '9px 14px',
-              border: '1px solid #4a1010',
-              background: '#0f0606',
-            }}>
-              {overCap  && <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#c42b24', lineHeight: 2.2, letterSpacing: 0.5 }}>REDUCE FACE VALUES — SUM EXCEEDS {SUM_CAP}</div>}
-              {tooZeros && <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#c42b24', lineHeight: 2.2, letterSpacing: 0.5 }}>MAXIMUM {MAX_ZERO} ZERO FACES ALLOWED</div>}
-            </div>
-          )}
-
-          {/* ── NOTES ──────────────────────────────────────────────────── */}
-          <div style={{
-            width: '100%', maxWidth: 350,
-            padding: '9px 14px', border: '1px solid #1a1410',
-          }}>
-            <p style={{ fontFamily: "'Space Mono', monospace", fontSize: 7, color: '#2a1c10', lineHeight: 2.3, letterSpacing: 0.3 }}>
-              FACE VALUE 0 = SKIP TURN<br/>
-              HIGH VALUES RISKY NEAR END TILE<br/>
-              HOVER A FACE TO INSPECT ON DIE
-            </p>
-          </div>
-
-          {/* ── LOCK IN ────────────────────────────────────────────────── */}
-          <button
-            onClick={lockIn}
-            disabled={!valid}
-            style={{
-              width: '100%', maxWidth: 350,
-              fontFamily: "'Bebas Neue', sans-serif",
-              fontSize: 22, letterSpacing: 7,
-              background: locked
-                ? '#192314'
-                : valid
-                ? '#c08820'
-                : '#161210',
-              color: locked
-                ? '#4a8a3a'
-                : valid
-                ? '#0a0806'
-                : '#2a2018',
-              border: `1px solid ${locked ? '#4a8a3a' : valid ? '#c08820' : '#1c1610'}`,
-              padding: '15px',
-              cursor: valid ? 'pointer' : 'not-allowed',
-              boxShadow: valid && !locked ? '0 0 22px rgba(192,136,32,0.22)' : 'none',
-              transition: 'all 0.22s',
-              animation: locked ? 'flashSave 0.5s ease-out' : 'none',
-            }}
-          >
-            {locked ? '✓  LOCKED IN' : 'LOCK IN'}
-          </button>
-
-        </div>
-      </div>
-    </div>
-  );
+  return null;
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
