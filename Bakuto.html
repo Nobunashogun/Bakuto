@@ -63,7 +63,7 @@
 
 <!-- ── COMPONENTS ────────────────────────────────────────────────────────────── -->
 <script type="text/babel">
-const { useState, useRef } = React;
+const { useState: _useStateC, useRef: _useRefC } = React;
 
 // ── Cauldron SVG ─────────────────────────────────────────────────────────────
 const Cauldron = ({ amount, label = 'THE POT' }) => (
@@ -251,9 +251,9 @@ const CheatTile = ({ cheat, selected, onBoard, onClick, active }) => {
 
 // ── Dice Face Cell ─────────────────────────────────────────────────────────────
 const DiceFaceCell = ({ value, faceIdx, isCenter, onChange, remaining }) => {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(String(value));
-  const inputRef = useRef(null);
+  const [editing, setEditing] = _useStateC(false);
+  const [draft, setDraft] = _useStateC(String(value));
+  const inputRef = _useRefC(null);
 
   function startEdit() { setEditing(true); setDraft(String(value)); }
   function commitEdit() {
